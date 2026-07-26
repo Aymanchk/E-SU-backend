@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head><meta charset="utf-8"></head>
+<body style="font-family: Arial, sans-serif; color: #222; line-height: 1.5;">
+  <p>Здравствуйте, {{ full_name }}.</p>
+  <p>Для вас создана учётная запись в системе E-SU.</p>
+  <p>
+    Логин: <strong>{{ email }}</strong><br>
+    Временный пароль: <strong>{{ password }}</strong>
+  </p>
+  <p><a href="{{ login_url }}">Войти в систему</a></p>
+  <p style="font-size: 13px; color: #666;">
+    После первого входа смените пароль в разделе профиля.
+  </p>
+</body>
+</html>
