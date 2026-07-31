@@ -129,3 +129,27 @@ class Document(UUIDModel, SoftDeleteModel):
 
     def __str__(self):
         return self.registration_number or self.title
+
+
+class DocumentNumberCounter(models.Model):
+    category = models.ForeignKey(
+        DocumentCategory,
+        on_delete=models.PROTECT,
+        related_name="number_counters",
+        verbose_name="Категория",
+    )
+    year = models.PositiveSmallIntegerField("Год")
+    last_number = models.PositiveIntegerField("Последний номер", default=0)
+    updated_at = models.DateTimeField("Изменён", auto_now=True)
+
+    class Meta:
+        verbose_name = "Счётчик номеров документов"
+        verbose_name_plural = "Счётчики номеров документов"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["category", "year"], name="unique_document_counter_category_year"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.category.code}:{self.year}:{self.last_number}"

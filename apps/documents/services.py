@@ -1,9 +1,15 @@
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q, QuerySet
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
-from .models import Document, DocumentCategory, DocumentCategoryStatus, DocumentStatus
+from .models import (
+    Document,
+    DocumentCategory,
+    DocumentCategoryStatus,
+    DocumentNumberCounter,
+    DocumentStatus,
+)
 
 
 class DocumentCategoryService:
@@ -127,4 +133,53 @@ class DocumentService:
         )
         document.archived_at = None
         document.save(update_fields=["status", "archived_at", "updated_at"])
+        return document
+
+
+class RegistrationService:
+    @staticmethod
+    def _locked_counter(category: DocumentCategory, year: int) -> DocumentNumberCounter:
+        try:
+            return DocumentNumberCounter.objects.select_for_update().get(
+                category=category, year=year
+            )
+        except DocumentNumberCounter.DoesNotExist:
+            try:
+                # Savepoint keeps the outer transaction usable if another request
+                # creates the same unique counter at exactly this moment.
+                with transaction.atomic():
+                    return DocumentNumberCounter.objects.create(
+                        category=category, year=year, last_number=0
+                    )
+            except IntegrityError:
+                return DocumentNumberCounter.objects.select_for_update().get(
+                    category=category, year=year
+                )
+
+    @classmethod
+    @transaction.atomic
+    def register(cls, document: Document, user) -> Document:
+        if not (user.is_admin_role or user.has_permission("documents.register")):
+            raise PermissionDenied("Недостаточно прав для регистрации документа")
+
+        document = (
+            Document.objects.select_for_update()
+            .select_related("category")
+            .get(pk=document.pk)
+        )
+        if document.registration_number:
+            raise ValidationError("Документ уже зарегистрирован")
+        if document.status != DocumentStatus.APPROVED:
+            raise ValidationError("Зарегистрировать можно только согласованный документ")
+
+        year = timezone.localdate().year
+        counter = cls._locked_counter(document.category, year)
+        counter.last_number += 1
+        counter.save(update_fields=["last_number", "updated_at"])
+
+        category_code = document.category.code.upper()
+        document.registration_number = (
+            f"ESU-{category_code}-{year}-{counter.last_number:06d}"
+        )
+        document.save(update_fields=["registration_number", "updated_at"])
         return document

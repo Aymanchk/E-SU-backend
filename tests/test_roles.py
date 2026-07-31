@@ -8,9 +8,11 @@ pytestmark = pytest.mark.django_db
 
 
 def test_seed_created_roles_and_permissions(db):
-    assert Permission.objects.count() == 11
+    assert Permission.objects.count() == 12
     codes = set(Role.objects.values_list("code", flat=True))
     assert {"admin", "employee", "manager", "office"}.issubset(codes)
+    assert Role.objects.get(code="admin").permissions.filter(code="documents.register").exists()
+    assert Role.objects.get(code="office").permissions.filter(code="documents.register").exists()
 
 
 def test_system_roles_cannot_be_deleted(admin_client, roles):
@@ -57,4 +59,4 @@ def test_unknown_permission_rejected(admin_client, roles):
 def test_permissions_list(admin_client):
     response = admin_client.get("/api/permissions/")
     assert response.status_code == 200
-    assert len(response.json()["data"]) == 11
+    assert len(response.json()["data"]) == 12

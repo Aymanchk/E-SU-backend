@@ -14,7 +14,7 @@ from .serializers import (
     DocumentListSerializer,
     DocumentWriteSerializer,
 )
-from .services import DocumentCategoryService, DocumentService
+from .services import DocumentCategoryService, DocumentService, RegistrationService
 
 
 @extend_schema_view(
@@ -89,6 +89,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
         "overdue": "documents.view",
         "archive_list": "documents.view",
         "for_approval": "documents.approve",
+        "register": "documents.register",
     }
     filterset_class = DocumentFilter
     search_fields = ["title", "description", "registration_number"]
@@ -186,3 +187,9 @@ class DocumentViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def restore(self, request, pk=None):
         return self._service_response(DocumentService.restore(self.get_object(), request.user))
+
+    @extend_schema(summary="Зарегистрировать документ", tags=["Documents"])
+    @action(detail=True, methods=["post"])
+    def register(self, request, pk=None):
+        document = RegistrationService.register(self.get_object(), request.user)
+        return self._service_response(document)
