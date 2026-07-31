@@ -1,3 +1,7 @@
+from pathlib import Path
+from zipfile import BadZipFile, ZipFile
+
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import Q, QuerySet
 from django.utils import timezone
@@ -7,6 +11,7 @@ from .models import (
     Document,
     DocumentCategory,
     DocumentCategoryStatus,
+    DocumentFile,
     DocumentNumberCounter,
     DocumentStatus,
 )
@@ -183,3 +188,95 @@ class RegistrationService:
         )
         document.save(update_fields=["registration_number", "updated_at"])
         return document
+
+
+class FileService:
+    ALLOWED_MIME_TYPES = {
+        ".pdf": {"application/pdf"},
+        ".doc": {"application/msword"},
+        ".docx": {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        },
+        ".xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+        ".png": {"image/png"},
+        ".jpg": {"image/jpeg"},
+        ".jpeg": {"image/jpeg"},
+    }
+
+    @staticmethod
+    def _has_valid_signature(uploaded_file, extension: str) -> bool:
+        position = uploaded_file.tell()
+        try:
+            header = uploaded_file.read(8)
+            uploaded_file.seek(0)
+            if extension == ".pdf":
+                return header.startswith(b"%PDF-")
+            if extension == ".png":
+                return header == b"\x89PNG\r\n\x1a\n"
+            if extension in {".jpg", ".jpeg"}:
+                return header.startswith(b"\xff\xd8\xff")
+            if extension == ".doc":
+                return header == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+            if extension in {".docx", ".xlsx"}:
+                try:
+                    with ZipFile(uploaded_file) as archive:
+                        prefix = "word/" if extension == ".docx" else "xl/"
+                        return any(name.startswith(prefix) for name in archive.namelist())
+                except BadZipFile:
+                    return False
+            return False
+        finally:
+            uploaded_file.seek(position)
+
+    @classmethod
+    def validate_upload(cls, uploaded_file) -> tuple[str, str]:
+        original_name = Path(uploaded_file.name).name
+        extension = Path(original_name).suffix.lower()
+        if extension not in cls.ALLOWED_MIME_TYPES:
+            raise ValidationError(
+                "Недопустимый формат файла. Разрешены PDF, DOC, DOCX, XLSX, PNG, JPG и JPEG."
+            )
+
+        mime_type = (getattr(uploaded_file, "content_type", "") or "").lower()
+        if mime_type not in cls.ALLOWED_MIME_TYPES[extension]:
+            raise ValidationError("MIME-тип файла не соответствует его расширению")
+
+        if uploaded_file.size > settings.MAX_DOCUMENT_FILE_SIZE:
+            max_megabytes = settings.MAX_DOCUMENT_FILE_SIZE // (1024 * 1024)
+            raise ValidationError(f"Размер файла не должен превышать {max_megabytes} МБ")
+        if uploaded_file.size == 0:
+            raise ValidationError("Нельзя загрузить пустой файл")
+        if not cls._has_valid_signature(uploaded_file, extension):
+            raise ValidationError("Содержимое файла не соответствует заявленному формату")
+        return extension.removeprefix("."), mime_type
+
+    @classmethod
+    @transaction.atomic
+    def upload(cls, document: Document, uploaded_file, user, is_main=False) -> DocumentFile:
+        DocumentService.ensure_can_edit(document, user)
+        file_type, mime_type = cls.validate_upload(uploaded_file)
+
+        existing_files = document.files.exists()
+        make_main = is_main or not existing_files
+        if make_main:
+            document.files.filter(is_main=True).update(is_main=False)
+
+        return DocumentFile.objects.create(
+            document=document,
+            file=uploaded_file,
+            original_name=Path(uploaded_file.name).name,
+            file_type=file_type,
+            mime_type=mime_type,
+            size=uploaded_file.size,
+            is_main=make_main,
+            uploaded_by=user,
+        )
+
+    @staticmethod
+    @transaction.atomic
+    def delete(document_file: DocumentFile, user) -> None:
+        DocumentService.ensure_can_edit(document_file.document, user)
+        storage = document_file.file.storage
+        stored_name = document_file.file.name
+        document_file.delete()
+        transaction.on_commit(lambda: storage.delete(stored_name))

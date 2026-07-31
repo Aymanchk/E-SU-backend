@@ -1,4 +1,8 @@
+import uuid
+from pathlib import Path
+
 from django.db import models
+from django.db.models import Q
 
 from apps.common.models import SoftDeleteModel, TimeStampedModel, UUIDModel
 
@@ -153,3 +157,48 @@ class DocumentNumberCounter(models.Model):
 
     def __str__(self):
         return f"{self.category.code}:{self.year}:{self.last_number}"
+
+
+def document_file_upload_path(instance, filename):
+    extension = Path(filename).suffix.lower()
+    return f"documents/{instance.document_id}/{uuid.uuid4().hex}{extension}"
+
+
+class DocumentFile(UUIDModel):
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name="files",
+        verbose_name="Документ",
+    )
+    file = models.FileField(
+        "Файл", upload_to=document_file_upload_path, max_length=500
+    )
+    original_name = models.CharField("Исходное имя", max_length=255)
+    file_type = models.CharField("Тип файла", max_length=20)
+    mime_type = models.CharField("MIME-тип", max_length=150)
+    size = models.PositiveBigIntegerField("Размер")
+    is_main = models.BooleanField("Основной файл", default=False)
+    uploaded_by = models.ForeignKey(
+        "accounts.User",
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="uploaded_document_files",
+        verbose_name="Загрузил",
+    )
+    created_at = models.DateTimeField("Загружен", auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-is_main", "created_at"]
+        verbose_name = "Файл документа"
+        verbose_name_plural = "Файлы документов"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["document"],
+                condition=Q(is_main=True),
+                name="unique_main_file_per_document",
+            )
+        ]
+
+    def __str__(self):
+        return self.original_name

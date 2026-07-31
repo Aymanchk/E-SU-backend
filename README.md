@@ -23,7 +23,7 @@ Backend системы электронного документооборота
 ## Быстрый старт через Docker
 
 ```bash
-cp .env.example .env.docker
+cp .env.docker.example .env.docker
 # заполнить SECRET_KEY, DATABASE_URL, REDIS_URL (для compose — хосты db/redis)
 
 docker compose up --build

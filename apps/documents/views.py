@@ -1,5 +1,6 @@
+from django.http import FileResponse
 from drf_spectacular.utils import extend_schema, extend_schema_view
-from rest_framework import viewsets
+from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -7,14 +8,16 @@ from rest_framework.response import Response
 from apps.common.permissions import HasPermissionPerAction
 
 from .filters import DocumentCategoryFilter, DocumentFilter
-from .models import Document, DocumentCategory, DocumentStatus
+from .models import Document, DocumentCategory, DocumentFile, DocumentStatus
 from .serializers import (
     DocumentCategorySerializer,
     DocumentDetailSerializer,
+    DocumentFileSerializer,
+    DocumentFileUploadSerializer,
     DocumentListSerializer,
     DocumentWriteSerializer,
 )
-from .services import DocumentCategoryService, DocumentService, RegistrationService
+from .services import DocumentCategoryService, DocumentService, FileService, RegistrationService
 
 
 @extend_schema_view(
@@ -193,3 +196,69 @@ class DocumentViewSet(viewsets.ModelViewSet):
     def register(self, request, pk=None):
         document = RegistrationService.register(self.get_object(), request.user)
         return self._service_response(document)
+
+    @extend_schema(
+        summary="Файлы документа",
+        tags=["Document files"],
+        request=DocumentFileUploadSerializer,
+        responses={200: DocumentFileSerializer(many=True), 201: DocumentFileSerializer},
+    )
+    @action(detail=True, methods=["get", "post"])
+    def files(self, request, pk=None):
+        document = self.get_object()
+        if request.method == "POST":
+            upload_serializer = DocumentFileUploadSerializer(data=request.data)
+            upload_serializer.is_valid(raise_exception=True)
+            document_file = FileService.upload(
+                document=document,
+                uploaded_file=upload_serializer.validated_data["file"],
+                user=request.user,
+                is_main=upload_serializer.validated_data["is_main"],
+            )
+            return Response(
+                DocumentFileSerializer(document_file, context=self.get_serializer_context()).data,
+                status=status.HTTP_201_CREATED,
+            )
+
+        queryset = document.files.select_related("uploaded_by")
+        page = self.paginate_queryset(queryset)
+        serializer = DocumentFileSerializer(
+            page if page is not None else queryset,
+            many=True,
+            context=self.get_serializer_context(),
+        )
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
+
+
+class DocumentFileViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
+    queryset = DocumentFile.objects.none()
+    serializer_class = DocumentFileSerializer
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get", "delete", "head", "options"]
+
+    def get_queryset(self):
+        queryset = DocumentFile.objects.select_related(
+            "document", "document__category", "uploaded_by"
+        )
+        if getattr(self, "swagger_fake_view", False):
+            return queryset.none()
+        visible_documents = DocumentService.visible_to(self.request.user)
+        return queryset.filter(document__in=visible_documents)
+
+    def perform_destroy(self, instance):
+        FileService.delete(instance, self.request.user)
+
+    @extend_schema(summary="Скачать файл документа", tags=["Document files"])
+    @action(detail=True, methods=["get"])
+    def download(self, request, pk=None):
+        document_file = self.get_object()
+        response = FileResponse(
+            document_file.file.open("rb"),
+            as_attachment=True,
+            filename=document_file.original_name,
+            content_type=document_file.mime_type,
+        )
+        response["Content-Length"] = document_file.size
+        return response

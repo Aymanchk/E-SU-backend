@@ -46,6 +46,7 @@ THIRD_PARTY_APPS = [
     "django_filters",
     "drf_spectacular",
     "corsheaders",
+    "storages",
 ]
 
 LOCAL_APPS = [
@@ -153,10 +154,30 @@ MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Хранилище файлов. В development локальное, в production S3/MinIO.
-STORAGES = {
-    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
-    "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
-}
+if env.bool("USE_S3", default=False):
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.s3.S3Storage",
+            "OPTIONS": {
+                "bucket_name": env("S3_BUCKET_NAME", default="esu-documents"),
+                "endpoint_url": env("S3_ENDPOINT_URL", default=""),
+                "access_key": env("S3_ACCESS_KEY", default=""),
+                "secret_key": env("S3_SECRET_KEY", default=""),
+                "region_name": env("S3_REGION_NAME", default="us-east-1"),
+                "default_acl": None,
+                "querystring_auth": True,
+                "file_overwrite": False,
+            },
+        },
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    }
+else:
+    STORAGES = {
+        "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    }
+
+MAX_DOCUMENT_FILE_SIZE = env.int("MAX_DOCUMENT_FILE_SIZE", default=20 * 1024 * 1024)
 
 
 # ---------------------------------------------------------------------------

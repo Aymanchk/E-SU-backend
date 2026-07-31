@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Document, DocumentCategory, DocumentNumberCounter
+from .models import Document, DocumentCategory, DocumentFile, DocumentNumberCounter
 
 
 @admin.register(DocumentCategory)
@@ -25,3 +25,21 @@ class DocumentNumberCounterAdmin(admin.ModelAdmin):
     list_filter = ("year",)
     search_fields = ("category__name", "category__code")
     readonly_fields = ("category", "year", "last_number", "updated_at")
+
+
+@admin.register(DocumentFile)
+class DocumentFileAdmin(admin.ModelAdmin):
+    list_display = ("original_name", "document", "file_type", "size", "is_main", "created_at")
+    list_filter = ("file_type", "is_main")
+    search_fields = ("original_name", "document__title", "document__registration_number")
+    readonly_fields = (
+        "document",
+        "file",
+        "original_name",
+        "file_type",
+        "mime_type",
+        "size",
+        "is_main",
+        "uploaded_by",
+        "created_at",
+    )

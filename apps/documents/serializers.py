@@ -3,7 +3,13 @@ from rest_framework import serializers
 from apps.accounts.serializers import UserShortSerializer
 from apps.organizations.serializers import DepartmentShortSerializer
 
-from .models import Document, DocumentCategory, DocumentCategoryStatus, DocumentStatus
+from .models import (
+    Document,
+    DocumentCategory,
+    DocumentCategoryStatus,
+    DocumentFile,
+    DocumentStatus,
+)
 
 
 class DocumentCategorySerializer(serializers.ModelSerializer):
@@ -128,3 +134,28 @@ class DocumentWriteSerializer(serializers.ModelSerializer):
         ):
             raise serializers.ValidationError("Документ в этом статусе нельзя редактировать")
         return attrs
+
+
+class DocumentFileSerializer(serializers.ModelSerializer):
+    uploaded_by = UserShortSerializer(read_only=True)
+
+    class Meta:
+        model = DocumentFile
+        fields = [
+            "id",
+            "document",
+            "file",
+            "original_name",
+            "file_type",
+            "mime_type",
+            "size",
+            "is_main",
+            "uploaded_by",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
+class DocumentFileUploadSerializer(serializers.Serializer):
+    file = serializers.FileField(write_only=True)
+    is_main = serializers.BooleanField(default=False, required=False)
