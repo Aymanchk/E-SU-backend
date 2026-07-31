@@ -1,9 +1,14 @@
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
-from apps.accounts.serializers import UserShortSerializer
+from apps.accounts.models import User, UserStatus
+from apps.accounts.serializers import RoleShortSerializer, UserShortSerializer
 from apps.organizations.serializers import DepartmentShortSerializer
 
 from .models import (
+    ApprovalAction,
+    ApprovalRoute,
+    ApprovalStep,
     Document,
     DocumentCategory,
     DocumentCategoryStatus,
@@ -159,3 +164,78 @@ class DocumentFileSerializer(serializers.ModelSerializer):
 class DocumentFileUploadSerializer(serializers.Serializer):
     file = serializers.FileField(write_only=True)
     is_main = serializers.BooleanField(default=False, required=False)
+
+
+class DocumentSubmitSerializer(serializers.Serializer):
+    approvers = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.filter(status=UserStatus.ACTIVE, is_active=True).select_related(
+            "role"
+        ),
+        many=True,
+    )
+
+    def validate_approvers(self, value):
+        ids = [approver.id for approver in value]
+        if not ids:
+            raise serializers.ValidationError("Добавьте хотя бы одного согласующего")
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError("Согласующие в маршруте не должны повторяться")
+        return value
+
+
+class ApprovalDecisionSerializer(serializers.Serializer):
+    comment = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class ApprovalReturnSerializer(serializers.Serializer):
+    comment = serializers.CharField(required=True, allow_blank=False)
+
+
+class ApprovalActionSerializer(serializers.ModelSerializer):
+    actor = UserShortSerializer(read_only=True)
+
+    class Meta:
+        model = ApprovalAction
+        fields = ["id", "step", "actor", "action", "comment", "created_at"]
+
+
+class ApprovalStepSerializer(serializers.ModelSerializer):
+    approver = UserShortSerializer(read_only=True)
+    role = RoleShortSerializer(read_only=True)
+
+    class Meta:
+        model = ApprovalStep
+        fields = [
+            "id",
+            "order",
+            "approver",
+            "role",
+            "status",
+            "comment",
+            "acted_at",
+            "created_at",
+        ]
+
+
+class ApprovalRouteSerializer(serializers.ModelSerializer):
+    created_by = UserShortSerializer(read_only=True)
+    steps = ApprovalStepSerializer(many=True, read_only=True)
+    actions = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ApprovalRoute
+        fields = [
+            "id",
+            "document",
+            "status",
+            "created_by",
+            "created_at",
+            "completed_at",
+            "steps",
+            "actions",
+        ]
+
+    @extend_schema_field(ApprovalActionSerializer(many=True))
+    def get_actions(self, obj):
+        actions = ApprovalAction.objects.filter(step__route=obj).select_related("actor")
+        return ApprovalActionSerializer(actions, many=True).data

@@ -260,6 +260,9 @@ SPECTACULAR_SETTINGS = {
         "DocumentCategoryStatusEnum": "apps.documents.models.DocumentCategoryStatus",
         "DocumentStatusEnum": "apps.documents.models.DocumentStatus",
         "DocumentPriorityEnum": "apps.documents.models.DocumentPriority",
+        "ApprovalRouteStatusEnum": "apps.documents.models.ApprovalRouteStatus",
+        "ApprovalStepStatusEnum": "apps.documents.models.ApprovalStepStatus",
+        "ApprovalActionTypeEnum": "apps.documents.models.ApprovalActionType",
     },
     "TAGS": [
         {"name": "Auth", "description": "Авторизация и профиль"},

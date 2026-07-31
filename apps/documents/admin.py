@@ -1,6 +1,14 @@
 from django.contrib import admin
 
-from .models import Document, DocumentCategory, DocumentFile, DocumentNumberCounter
+from .models import (
+    ApprovalAction,
+    ApprovalRoute,
+    ApprovalStep,
+    Document,
+    DocumentCategory,
+    DocumentFile,
+    DocumentNumberCounter,
+)
 
 
 @admin.register(DocumentCategory)
@@ -43,3 +51,23 @@ class DocumentFileAdmin(admin.ModelAdmin):
         "uploaded_by",
         "created_at",
     )
+
+
+class ApprovalStepInline(admin.TabularInline):
+    model = ApprovalStep
+    extra = 0
+    readonly_fields = ("document", "order", "approver", "role", "status", "comment", "acted_at")
+
+
+@admin.register(ApprovalRoute)
+class ApprovalRouteAdmin(admin.ModelAdmin):
+    list_display = ("document", "status", "created_by", "created_at", "completed_at")
+    list_filter = ("status",)
+    inlines = (ApprovalStepInline,)
+
+
+@admin.register(ApprovalAction)
+class ApprovalActionAdmin(admin.ModelAdmin):
+    list_display = ("document", "step", "actor", "action", "created_at")
+    list_filter = ("action",)
+    readonly_fields = ("document", "step", "actor", "action", "comment", "created_at")

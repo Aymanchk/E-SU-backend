@@ -121,8 +121,12 @@ class TestDocumentFileUpload:
         )
         assert response.status_code == 400
 
-    def test_files_locked_after_submit(self, employee_client, document):
-        employee_client.post(f"/api/documents/{document.id}/submit/")
+    def test_files_locked_after_submit(self, employee_client, document, manager):
+        employee_client.post(
+            f"/api/documents/{document.id}/submit/",
+            {"approvers": [str(manager.id)]},
+            format="json",
+        )
         response = employee_client.post(
             f"/api/documents/{document.id}/files/",
             {"file": upload()},
@@ -172,8 +176,14 @@ class TestDocumentFileDownloadAndDelete:
         assert not DocumentFile.objects.filter(pk=document_file.pk).exists()
         assert not stored_path.exists()
 
-    def test_delete_blocked_after_submit(self, employee_client, document, document_file):
-        employee_client.post(f"/api/documents/{document.id}/submit/")
+    def test_delete_blocked_after_submit(
+        self, employee_client, document, document_file, manager
+    ):
+        employee_client.post(
+            f"/api/documents/{document.id}/submit/",
+            {"approvers": [str(manager.id)]},
+            format="json",
+        )
         response = employee_client.delete(f"/api/document-files/{document_file.id}/")
         assert response.status_code == 400
         assert DocumentFile.objects.filter(pk=document_file.pk).exists()

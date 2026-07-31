@@ -202,3 +202,148 @@ class DocumentFile(UUIDModel):
 
     def __str__(self):
         return self.original_name
+
+
+class ApprovalRouteStatus(models.TextChoices):
+    ACTIVE = "active", "Активен"
+    COMPLETED = "completed", "Завершён"
+    RETURNED = "returned", "Возвращён"
+    CANCELLED = "cancelled", "Отменён"
+
+
+class ApprovalStepStatus(models.TextChoices):
+    PENDING = "pending", "Ожидает"
+    CURRENT = "current", "Текущий"
+    APPROVED = "approved", "Согласован"
+    RETURNED = "returned", "Возвращён"
+    CANCELLED = "cancelled", "Отменён"
+
+
+class ApprovalActionType(models.TextChoices):
+    APPROVE = "approve", "Согласовать"
+    RETURN = "return", "Вернуть"
+
+
+class ApprovalRoute(UUIDModel):
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name="approval_routes",
+        verbose_name="Документ",
+    )
+    status = models.CharField(
+        "Статус",
+        max_length=20,
+        choices=ApprovalRouteStatus.choices,
+        default=ApprovalRouteStatus.ACTIVE,
+        db_index=True,
+    )
+    created_by = models.ForeignKey(
+        "accounts.User",
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="created_approval_routes",
+        verbose_name="Создал",
+    )
+    created_at = models.DateTimeField("Создан", auto_now_add=True, db_index=True)
+    completed_at = models.DateTimeField("Завершён", null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Маршрут согласования"
+        verbose_name_plural = "Маршруты согласования"
+
+    def __str__(self):
+        return f"{self.document}: {self.status}"
+
+
+class ApprovalStep(UUIDModel):
+    route = models.ForeignKey(
+        ApprovalRoute,
+        on_delete=models.CASCADE,
+        related_name="steps",
+        verbose_name="Маршрут",
+    )
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name="approval_steps",
+        verbose_name="Документ",
+    )
+    order = models.PositiveIntegerField("Порядок")
+    approver = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.PROTECT,
+        related_name="approval_steps",
+        verbose_name="Согласующий",
+    )
+    role = models.ForeignKey(
+        "accounts.Role",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="approval_steps",
+        verbose_name="Роль на момент назначения",
+    )
+    status = models.CharField(
+        "Статус",
+        max_length=20,
+        choices=ApprovalStepStatus.choices,
+        default=ApprovalStepStatus.PENDING,
+        db_index=True,
+    )
+    comment = models.TextField("Комментарий", blank=True)
+    acted_at = models.DateTimeField("Дата действия", null=True, blank=True)
+    created_at = models.DateTimeField("Создан", auto_now_add=True)
+
+    class Meta:
+        ordering = ["order"]
+        verbose_name = "Шаг согласования"
+        verbose_name_plural = "Шаги согласования"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["route", "order"], name="unique_approval_step_order"
+            )
+        ]
+        indexes = [
+            models.Index(fields=["document", "status"]),
+            models.Index(fields=["approver", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.document}: {self.order} — {self.approver}"
+
+
+class ApprovalAction(UUIDModel):
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name="approval_actions",
+        verbose_name="Документ",
+    )
+    step = models.ForeignKey(
+        ApprovalStep,
+        on_delete=models.PROTECT,
+        related_name="actions",
+        verbose_name="Шаг",
+    )
+    actor = models.ForeignKey(
+        "accounts.User",
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="approval_actions",
+        verbose_name="Пользователь",
+    )
+    action = models.CharField(
+        "Действие", max_length=20, choices=ApprovalActionType.choices, db_index=True
+    )
+    comment = models.TextField("Комментарий", blank=True)
+    created_at = models.DateTimeField("Создано", auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        verbose_name = "Действие согласования"
+        verbose_name_plural = "Действия согласования"
+
+    def __str__(self):
+        return f"{self.document}: {self.action}"

@@ -8,6 +8,12 @@ from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from .models import (
+    ApprovalAction,
+    ApprovalActionType,
+    ApprovalRoute,
+    ApprovalRouteStatus,
+    ApprovalStep,
+    ApprovalStepStatus,
     Document,
     DocumentCategory,
     DocumentCategoryStatus,
@@ -54,7 +60,9 @@ class DocumentService:
             return queryset
 
         role_code = user.role.code if user.role_id else None
-        own_or_responsible = Q(author=user) | Q(responsible=user)
+        own_or_responsible = (
+            Q(author=user) | Q(responsible=user) | Q(approval_steps__approver=user)
+        )
         if role_code == "manager":
             return queryset.filter(own_or_responsible | Q(department=user.department)).distinct()
         if role_code == "office":
@@ -85,18 +93,6 @@ class DocumentService:
             raise ValidationError("После отправки документ нельзя удалить")
         if not (user.is_admin_role or document.author_id == user.id):
             raise PermissionDenied("Удалить документ может только автор или администратор")
-
-    @classmethod
-    @transaction.atomic
-    def submit(cls, document: Document, user) -> Document:
-        cls.ensure_can_edit(document, user)
-        document.status = DocumentStatus.IN_REVIEW
-        document.submitted_at = timezone.now()
-        document.current_approval_step = None
-        document.save(
-            update_fields=["status", "submitted_at", "current_approval_step", "updated_at"]
-        )
-        return document
 
     @staticmethod
     @transaction.atomic
@@ -280,3 +276,162 @@ class FileService:
         stored_name = document_file.file.name
         document_file.delete()
         transaction.on_commit(lambda: storage.delete(stored_name))
+
+
+class ApprovalService:
+    @staticmethod
+    def _locked_document(document: Document) -> Document:
+        return Document.objects.select_for_update().get(pk=document.pk)
+
+    @staticmethod
+    def _ensure_current_approver(step: ApprovalStep, user) -> None:
+        if not (user.is_admin_role or step.approver_id == user.id):
+            raise PermissionDenied("Действие доступно только текущему согласующему")
+
+    @classmethod
+    @transaction.atomic
+    def submit(cls, document: Document, user, approvers: list) -> ApprovalRoute:
+        document = cls._locked_document(document)
+        DocumentService.ensure_can_edit(document, user)
+
+        ApprovalRoute.objects.filter(
+            document=document, status=ApprovalRouteStatus.ACTIVE
+        ).update(status=ApprovalRouteStatus.CANCELLED, completed_at=timezone.now())
+        ApprovalStep.objects.filter(
+            document=document,
+            route__status=ApprovalRouteStatus.CANCELLED,
+            status__in=[ApprovalStepStatus.PENDING, ApprovalStepStatus.CURRENT],
+        ).update(status=ApprovalStepStatus.CANCELLED)
+
+        route = ApprovalRoute.objects.create(document=document, created_by=user)
+        ApprovalStep.objects.bulk_create(
+            [
+                ApprovalStep(
+                    route=route,
+                    document=document,
+                    order=order,
+                    approver=approver,
+                    role_id=approver.role_id,
+                    status=(
+                        ApprovalStepStatus.CURRENT
+                        if order == 1
+                        else ApprovalStepStatus.PENDING
+                    ),
+                )
+                for order, approver in enumerate(approvers, start=1)
+            ]
+        )
+
+        document.status = DocumentStatus.IN_REVIEW
+        document.submitted_at = timezone.now()
+        document.approved_at = None
+        document.current_approval_step = 1
+        document.save(
+            update_fields=[
+                "status",
+                "submitted_at",
+                "approved_at",
+                "current_approval_step",
+                "updated_at",
+            ]
+        )
+        return route
+
+    @classmethod
+    @transaction.atomic
+    def approve(cls, document: Document, user, comment="") -> ApprovalRoute:
+        document = cls._locked_document(document)
+        if document.status != DocumentStatus.IN_REVIEW:
+            raise ValidationError("Документ не находится на согласовании")
+        route = ApprovalRoute.objects.select_for_update().get(
+            document=document, status=ApprovalRouteStatus.ACTIVE
+        )
+        try:
+            step = ApprovalStep.objects.select_for_update().get(
+                route=route, status=ApprovalStepStatus.CURRENT
+            )
+        except ApprovalStep.DoesNotExist as exc:
+            raise ValidationError("Текущий шаг согласования не найден") from exc
+        cls._ensure_current_approver(step, user)
+
+        now = timezone.now()
+        step.status = ApprovalStepStatus.APPROVED
+        step.comment = comment
+        step.acted_at = now
+        step.save(update_fields=["status", "comment", "acted_at"])
+        ApprovalAction.objects.create(
+            document=document,
+            step=step,
+            actor=user,
+            action=ApprovalActionType.APPROVE,
+            comment=comment,
+        )
+
+        next_step = (
+            ApprovalStep.objects.select_for_update()
+            .filter(route=route, status=ApprovalStepStatus.PENDING, order__gt=step.order)
+            .order_by("order")
+            .first()
+        )
+        if next_step:
+            next_step.status = ApprovalStepStatus.CURRENT
+            next_step.save(update_fields=["status"])
+            document.current_approval_step = next_step.order
+            document.save(update_fields=["current_approval_step", "updated_at"])
+        else:
+            route.status = ApprovalRouteStatus.COMPLETED
+            route.completed_at = now
+            route.save(update_fields=["status", "completed_at"])
+            document.status = DocumentStatus.APPROVED
+            document.approved_at = now
+            document.current_approval_step = None
+            document.save(
+                update_fields=[
+                    "status",
+                    "approved_at",
+                    "current_approval_step",
+                    "updated_at",
+                ]
+            )
+        return route
+
+    @classmethod
+    @transaction.atomic
+    def return_document(cls, document: Document, user, comment: str) -> ApprovalRoute:
+        document = cls._locked_document(document)
+        if document.status != DocumentStatus.IN_REVIEW:
+            raise ValidationError("Документ не находится на согласовании")
+        route = ApprovalRoute.objects.select_for_update().get(
+            document=document, status=ApprovalRouteStatus.ACTIVE
+        )
+        try:
+            step = ApprovalStep.objects.select_for_update().get(
+                route=route, status=ApprovalStepStatus.CURRENT
+            )
+        except ApprovalStep.DoesNotExist as exc:
+            raise ValidationError("Текущий шаг согласования не найден") from exc
+        cls._ensure_current_approver(step, user)
+
+        now = timezone.now()
+        step.status = ApprovalStepStatus.RETURNED
+        step.comment = comment
+        step.acted_at = now
+        step.save(update_fields=["status", "comment", "acted_at"])
+        route.steps.filter(status=ApprovalStepStatus.PENDING).update(
+            status=ApprovalStepStatus.CANCELLED
+        )
+        ApprovalAction.objects.create(
+            document=document,
+            step=step,
+            actor=user,
+            action=ApprovalActionType.RETURN,
+            comment=comment,
+        )
+
+        route.status = ApprovalRouteStatus.RETURNED
+        route.completed_at = now
+        route.save(update_fields=["status", "completed_at"])
+        document.status = DocumentStatus.RETURNED
+        document.current_approval_step = None
+        document.save(update_fields=["status", "current_approval_step", "updated_at"])
+        return route

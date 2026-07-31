@@ -8,16 +8,33 @@ from rest_framework.response import Response
 from apps.common.permissions import HasPermissionPerAction
 
 from .filters import DocumentCategoryFilter, DocumentFilter
-from .models import Document, DocumentCategory, DocumentFile, DocumentStatus
+from .models import (
+    ApprovalStep,
+    ApprovalStepStatus,
+    Document,
+    DocumentCategory,
+    DocumentFile,
+    DocumentStatus,
+)
 from .serializers import (
+    ApprovalDecisionSerializer,
+    ApprovalReturnSerializer,
+    ApprovalRouteSerializer,
     DocumentCategorySerializer,
     DocumentDetailSerializer,
     DocumentFileSerializer,
     DocumentFileUploadSerializer,
     DocumentListSerializer,
+    DocumentSubmitSerializer,
     DocumentWriteSerializer,
 )
-from .services import DocumentCategoryService, DocumentService, FileService, RegistrationService
+from .services import (
+    ApprovalService,
+    DocumentCategoryService,
+    DocumentService,
+    FileService,
+    RegistrationService,
+)
 
 
 @extend_schema_view(
@@ -93,6 +110,10 @@ class DocumentViewSet(viewsets.ModelViewSet):
         "archive_list": "documents.view",
         "for_approval": "documents.approve",
         "register": "documents.register",
+        "submit": "documents.create",
+        "approval": "documents.view",
+        "approve": "documents.approve",
+        "return_document": "documents.return",
     }
     filterset_class = DocumentFilter
     search_fields = ["title", "description", "registration_number"]
@@ -137,8 +158,13 @@ class DocumentViewSet(viewsets.ModelViewSet):
     @extend_schema(summary="Документы на согласование", tags=["Documents"])
     @action(detail=False, methods=["get"], url_path="for-approval")
     def for_approval(self, request):
-        # Наполнение будет подключено вместе с ApprovalStep на этапе согласования.
-        return self._paginated(self.get_queryset().none())
+        current_steps = ApprovalStep.objects.filter(status=ApprovalStepStatus.CURRENT)
+        if not request.user.is_admin_role:
+            current_steps = current_steps.filter(approver=request.user)
+        queryset = self.get_queryset().filter(
+            pk__in=current_steps.values("document_id")
+        )
+        return self._paginated(self.filter_queryset(queryset.distinct()))
 
     @extend_schema(summary="Возвращённые документы", tags=["Documents"])
     @action(detail=False, methods=["get"])
@@ -171,10 +197,20 @@ class DocumentViewSet(viewsets.ModelViewSet):
             return self.get_paginated_response(serializer.data)
         return Response(serializer.data)
 
-    @extend_schema(summary="Отправить документ", tags=["Documents"])
+    @extend_schema(
+        summary="Отправить документ на согласование",
+        tags=["Documents"],
+        request=DocumentSubmitSerializer,
+        responses={200: ApprovalRouteSerializer},
+    )
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
-        return self._service_response(DocumentService.submit(self.get_object(), request.user))
+        serializer = DocumentSubmitSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        route = ApprovalService.submit(
+            self.get_object(), request.user, serializer.validated_data["approvers"]
+        )
+        return Response(ApprovalRouteSerializer(route).data)
 
     @extend_schema(summary="Завершить документ", tags=["Documents"])
     @action(detail=True, methods=["post"])
@@ -196,6 +232,55 @@ class DocumentViewSet(viewsets.ModelViewSet):
     def register(self, request, pk=None):
         document = RegistrationService.register(self.get_object(), request.user)
         return self._service_response(document)
+
+    @extend_schema(
+        summary="Маршрут согласования документа",
+        tags=["Approvals"],
+        responses={200: ApprovalRouteSerializer},
+    )
+    @action(detail=True, methods=["get"])
+    def approval(self, request, pk=None):
+        document = self.get_object()
+        route = (
+            document.approval_routes.prefetch_related("steps__approver", "steps__role")
+            .select_related("created_by")
+            .first()
+        )
+        if route is None:
+            from rest_framework.exceptions import NotFound
+
+            raise NotFound("Маршрут согласования ещё не создан")
+        return Response(ApprovalRouteSerializer(route).data)
+
+    @extend_schema(
+        summary="Согласовать текущий шаг",
+        tags=["Approvals"],
+        request=ApprovalDecisionSerializer,
+        responses={200: ApprovalRouteSerializer},
+    )
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        serializer = ApprovalDecisionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        route = ApprovalService.approve(
+            self.get_object(), request.user, serializer.validated_data["comment"]
+        )
+        return Response(ApprovalRouteSerializer(route).data)
+
+    @extend_schema(
+        summary="Вернуть документ автору",
+        tags=["Approvals"],
+        request=ApprovalReturnSerializer,
+        responses={200: ApprovalRouteSerializer},
+    )
+    @action(detail=True, methods=["post"], url_path="return")
+    def return_document(self, request, pk=None):
+        serializer = ApprovalReturnSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        route = ApprovalService.return_document(
+            self.get_object(), request.user, serializer.validated_data["comment"]
+        )
+        return Response(ApprovalRouteSerializer(route).data)
 
     @extend_schema(
         summary="Файлы документа",

@@ -98,8 +98,12 @@ class TestDocumentCrud:
         document.refresh_from_db()
         assert document.title == "Изменено"
 
-    def test_submitted_document_cannot_be_edited(self, employee_client, document):
-        employee_client.post(f"/api/documents/{document.id}/submit/")
+    def test_submitted_document_cannot_be_edited(self, employee_client, document, manager):
+        employee_client.post(
+            f"/api/documents/{document.id}/submit/",
+            {"approvers": [str(manager.id)]},
+            format="json",
+        )
         response = employee_client.patch(
             f"/api/documents/{document.id}/", {"title": "Нельзя"}, format="json"
         )
@@ -111,8 +115,12 @@ class TestDocumentCrud:
         assert not Document.objects.filter(pk=document.pk).exists()
         assert Document.all_objects.filter(pk=document.pk, is_deleted=True).exists()
 
-    def test_submitted_document_cannot_be_deleted(self, employee_client, document):
-        employee_client.post(f"/api/documents/{document.id}/submit/")
+    def test_submitted_document_cannot_be_deleted(self, employee_client, document, manager):
+        employee_client.post(
+            f"/api/documents/{document.id}/submit/",
+            {"approvers": [str(manager.id)]},
+            format="json",
+        )
         response = employee_client.delete(f"/api/documents/{document.id}/")
         assert response.status_code == 400
 
@@ -156,8 +164,12 @@ class TestDocumentVisibility:
 
 
 class TestDocumentActions:
-    def test_submit(self, employee_client, document):
-        response = employee_client.post(f"/api/documents/{document.id}/submit/")
+    def test_submit(self, employee_client, document, manager):
+        response = employee_client.post(
+            f"/api/documents/{document.id}/submit/",
+            {"approvers": [str(manager.id)]},
+            format="json",
+        )
         assert response.status_code == 200
         document.refresh_from_db()
         assert document.status == DocumentStatus.IN_REVIEW
