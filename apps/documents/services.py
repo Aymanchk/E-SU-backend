@@ -7,6 +7,9 @@ from django.db.models import Q, QuerySet
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
+from apps.notifications.models import NotificationType
+from apps.notifications.services import NotificationService
+
 from .models import (
     ApprovalAction,
     ApprovalActionType,
@@ -141,6 +144,14 @@ class DocumentService:
             new_values={"status": document.status, "archived_at": document.archived_at},
             description="Документ архивирован",
         )
+        if document.author_id != user.id:
+            NotificationService.create(
+                recipient=document.author,
+                notification_type=NotificationType.DOCUMENT_ARCHIVED,
+                title="Документ архивирован",
+                message=f"Документ «{document.title}» перемещён в архив.",
+                document=document,
+            )
         return document
 
     @staticmethod
@@ -418,6 +429,21 @@ class ApprovalService:
                 else "Документ отправлен на согласование"
             ),
         )
+        NotificationService.create(
+            recipient=document.author,
+            notification_type=NotificationType.DOCUMENT_SUBMITTED,
+            title="Документ отправлен на согласование",
+            message=f"Документ «{document.title}» отправлен по маршруту согласования.",
+            document=document,
+        )
+        first_approver = approvers[0]
+        NotificationService.create(
+            recipient=first_approver,
+            notification_type=NotificationType.APPROVAL_REQUIRED,
+            title="Требуется согласование",
+            message=f"Вам назначен документ «{document.title}» на согласование.",
+            document=document,
+        )
         return route
 
     @classmethod
@@ -468,6 +494,13 @@ class ApprovalService:
             next_step.save(update_fields=["status"])
             document.current_approval_step = next_step.order
             document.save(update_fields=["current_approval_step", "updated_at"])
+            NotificationService.create(
+                recipient=next_step.approver,
+                notification_type=NotificationType.APPROVAL_REQUIRED,
+                title="Требуется согласование",
+                message=f"Вам назначен документ «{document.title}» на согласование.",
+                document=document,
+            )
         else:
             route.status = ApprovalRouteStatus.COMPLETED
             route.completed_at = now
@@ -482,6 +515,13 @@ class ApprovalService:
                     "current_approval_step",
                     "updated_at",
                 ]
+            )
+            NotificationService.notify_many(
+                [document.author, document.responsible],
+                notification_type=NotificationType.DOCUMENT_APPROVED,
+                title="Документ согласован",
+                message=f"Документ «{document.title}» успешно согласован.",
+                document=document,
             )
         HistoryService.record(
             document,
@@ -550,6 +590,13 @@ class ApprovalService:
             new_values={"status": document.status, "reason": comment},
             description=f"Документ возвращён на шаге {step.order}",
         )
+        NotificationService.create(
+            recipient=document.author,
+            notification_type=NotificationType.DOCUMENT_RETURNED,
+            title="Документ возвращён",
+            message=f"Документ «{document.title}» возвращён: {comment}",
+            document=document,
+        )
         return route
 
 
@@ -559,12 +606,25 @@ class CommentService:
     def create(document: Document, user, text: str) -> DocumentComment:
         if document.status == DocumentStatus.ARCHIVED:
             raise ValidationError("Архивированный документ доступен только для чтения")
-        return DocumentComment.objects.create(
+        comment = DocumentComment.objects.create(
             document=document,
             author=user,
             text=text,
             comment_type=DocumentCommentType.GENERAL,
         )
+        recipients = [
+            recipient
+            for recipient in [document.author, document.responsible]
+            if recipient and recipient.id != user.id
+        ]
+        NotificationService.notify_many(
+            recipients,
+            notification_type=NotificationType.COMMENT_ADDED,
+            title="Новый комментарий к документу",
+            message=f"К документу «{document.title}» добавлен комментарий.",
+            document=document,
+        )
+        return comment
 
     @staticmethod
     def ensure_editable(comment: DocumentComment, user) -> None:

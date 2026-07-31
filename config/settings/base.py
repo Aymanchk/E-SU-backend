@@ -55,6 +55,7 @@ LOCAL_APPS = [
     "apps.organizations",
     "apps.audit",
     "apps.documents",
+    "apps.notifications",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -178,6 +179,8 @@ else:
     }
 
 MAX_DOCUMENT_FILE_SIZE = env.int("MAX_DOCUMENT_FILE_SIZE", default=20 * 1024 * 1024)
+NOTIFICATION_EMAIL_ENABLED = env.bool("NOTIFICATION_EMAIL_ENABLED", default=False)
+DEADLINE_SOON_HOURS = env.int("DEADLINE_SOON_HOURS", default=24)
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +268,7 @@ SPECTACULAR_SETTINGS = {
         "ApprovalActionTypeEnum": "apps.documents.models.ApprovalActionType",
         "DocumentCommentTypeEnum": "apps.documents.models.DocumentCommentType",
         "DocumentHistoryActionEnum": "apps.documents.models.DocumentHistoryAction",
+        "NotificationTypeEnum": "apps.notifications.models.NotificationType",
     },
     "TAGS": [
         {"name": "Auth", "description": "Авторизация и профиль"},
@@ -300,6 +304,12 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 300
 CELERY_TASK_SOFT_TIME_LIMIT = 240
+CELERY_BEAT_SCHEDULE = {
+    "check-document-deadlines-hourly": {
+        "task": "apps.notifications.tasks.check_document_deadlines",
+        "schedule": 3600.0,
+    }
+}
 
 
 # ---------------------------------------------------------------------------

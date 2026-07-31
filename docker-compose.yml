@@ -91,6 +91,20 @@ services:
       minio-init:
         condition: service_completed_successfully
 
+  celery-beat:
+    build: .
+    container_name: esu_celery_beat
+    command: celery -A config beat -l info --schedule=/tmp/celerybeat-schedule
+    volumes:
+      - .:/app
+    env_file:
+      - .env.docker
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   pgdata:
   miniodata:

@@ -6,6 +6,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.common.permissions import HasPermissionPerAction
+from apps.notifications.models import NotificationType
+from apps.notifications.services import NotificationService
 
 from .filters import DocumentCategoryFilter, DocumentFilter
 from .models import (
@@ -153,10 +155,19 @@ class DocumentViewSet(viewsets.ModelViewSet):
             new_values=HistoryService.snapshot(document),
             description="Документ создан",
         )
+        if document.responsible and document.responsible_id != self.request.user.id:
+            NotificationService.create(
+                recipient=document.responsible,
+                notification_type=NotificationType.RESPONSIBLE_ASSIGNED,
+                title="Вы назначены ответственным",
+                message=f"Вы назначены ответственным за документ «{document.title}».",
+                document=document,
+            )
 
     def perform_update(self, serializer):
         DocumentService.ensure_can_edit(self.get_object(), self.request.user)
         old_values = HistoryService.snapshot(serializer.instance)
+        old_responsible_id = serializer.instance.responsible_id
         document = serializer.save()
         HistoryService.record(
             document,
@@ -166,6 +177,18 @@ class DocumentViewSet(viewsets.ModelViewSet):
             new_values=HistoryService.snapshot(document),
             description=f"Изменены поля: {', '.join(self.request.data.keys())}",
         )
+        if (
+            document.responsible
+            and document.responsible_id != old_responsible_id
+            and document.responsible_id != self.request.user.id
+        ):
+            NotificationService.create(
+                recipient=document.responsible,
+                notification_type=NotificationType.RESPONSIBLE_ASSIGNED,
+                title="Вы назначены ответственным",
+                message=f"Вы назначены ответственным за документ «{document.title}».",
+                document=document,
+            )
 
     def perform_destroy(self, instance):
         DocumentService.ensure_can_delete(instance, self.request.user)
