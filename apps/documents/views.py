@@ -13,6 +13,7 @@ from .models import (
     ApprovalStepStatus,
     Document,
     DocumentCategory,
+    DocumentComment,
     DocumentFile,
     DocumentStatus,
 )
@@ -21,18 +22,23 @@ from .serializers import (
     ApprovalReturnSerializer,
     ApprovalRouteSerializer,
     DocumentCategorySerializer,
+    DocumentCommentCreateSerializer,
+    DocumentCommentSerializer,
     DocumentDetailSerializer,
     DocumentFileSerializer,
     DocumentFileUploadSerializer,
+    DocumentHistorySerializer,
     DocumentListSerializer,
     DocumentSubmitSerializer,
     DocumentWriteSerializer,
 )
 from .services import (
     ApprovalService,
+    CommentService,
     DocumentCategoryService,
     DocumentService,
     FileService,
+    HistoryService,
     RegistrationService,
 )
 
@@ -114,6 +120,8 @@ class DocumentViewSet(viewsets.ModelViewSet):
         "approval": "documents.view",
         "approve": "documents.approve",
         "return_document": "documents.return",
+        "comments": "documents.view",
+        "history": "documents.view",
     }
     filterset_class = DocumentFilter
     search_fields = ["title", "description", "registration_number"]
@@ -137,11 +145,27 @@ class DocumentViewSet(viewsets.ModelViewSet):
         return DocumentListSerializer
 
     def perform_create(self, serializer):
-        serializer.save(author=self.request.user)
+        document = serializer.save(author=self.request.user)
+        HistoryService.record(
+            document,
+            self.request.user,
+            "created",
+            new_values=HistoryService.snapshot(document),
+            description="Документ создан",
+        )
 
     def perform_update(self, serializer):
         DocumentService.ensure_can_edit(self.get_object(), self.request.user)
-        serializer.save()
+        old_values = HistoryService.snapshot(serializer.instance)
+        document = serializer.save()
+        HistoryService.record(
+            document,
+            self.request.user,
+            "updated",
+            old_values=old_values,
+            new_values=HistoryService.snapshot(document),
+            description=f"Изменены поля: {', '.join(self.request.data.keys())}",
+        )
 
     def perform_destroy(self, instance):
         DocumentService.ensure_can_delete(instance, self.request.user)
@@ -316,6 +340,52 @@ class DocumentViewSet(viewsets.ModelViewSet):
             return self.get_paginated_response(serializer.data)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="Комментарии документа",
+        tags=["Document comments"],
+        request=DocumentCommentCreateSerializer,
+        responses={200: DocumentCommentSerializer(many=True), 201: DocumentCommentSerializer},
+    )
+    @action(detail=True, methods=["get", "post"])
+    def comments(self, request, pk=None):
+        document = self.get_object()
+        if request.method == "POST":
+            input_serializer = DocumentCommentCreateSerializer(data=request.data)
+            input_serializer.is_valid(raise_exception=True)
+            comment = CommentService.create(
+                document, request.user, input_serializer.validated_data["text"]
+            )
+            return Response(
+                DocumentCommentSerializer(comment).data,
+                status=status.HTTP_201_CREATED,
+            )
+
+        queryset = document.comments.select_related("author")
+        page = self.paginate_queryset(queryset)
+        serializer = DocumentCommentSerializer(
+            page if page is not None else queryset, many=True
+        )
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
+
+    @extend_schema(
+        summary="История документа",
+        tags=["Document history"],
+        responses={200: DocumentHistorySerializer(many=True)},
+    )
+    @action(detail=True, methods=["get"])
+    def history(self, request, pk=None):
+        document = self.get_object()
+        queryset = document.history.select_related("user")
+        page = self.paginate_queryset(queryset)
+        serializer = DocumentHistorySerializer(
+            page if page is not None else queryset, many=True
+        )
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
+
 
 class DocumentFileViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
     queryset = DocumentFile.objects.none()
@@ -347,3 +417,37 @@ class DocumentFileViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
         )
         response["Content-Length"] = document_file.size
         return response
+
+
+class DocumentCommentViewSet(viewsets.GenericViewSet):
+    queryset = DocumentComment.objects.none()
+    serializer_class = DocumentCommentSerializer
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["patch", "delete", "head", "options"]
+
+    def get_queryset(self):
+        queryset = DocumentComment.objects.select_related("document", "author")
+        if getattr(self, "swagger_fake_view", False):
+            return queryset.none()
+        visible_documents = DocumentService.visible_to(self.request.user)
+        return queryset.filter(document__in=visible_documents)
+
+    @extend_schema(
+        summary="Изменить комментарий",
+        tags=["Document comments"],
+        request=DocumentCommentCreateSerializer,
+        responses={200: DocumentCommentSerializer},
+    )
+    def partial_update(self, request, *args, **kwargs):
+        comment = self.get_object()
+        serializer = DocumentCommentCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        comment = CommentService.update(
+            comment, request.user, serializer.validated_data["text"]
+        )
+        return Response(DocumentCommentSerializer(comment).data)
+
+    def destroy(self, request, *args, **kwargs):
+        comment = self.get_object()
+        CommentService.delete(comment, request.user)
+        return Response(status=status.HTTP_204_NO_CONTENT)

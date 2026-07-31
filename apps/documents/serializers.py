@@ -12,7 +12,9 @@ from .models import (
     Document,
     DocumentCategory,
     DocumentCategoryStatus,
+    DocumentComment,
     DocumentFile,
+    DocumentHistory,
     DocumentStatus,
 )
 
@@ -239,3 +241,61 @@ class ApprovalRouteSerializer(serializers.ModelSerializer):
     def get_actions(self, obj):
         actions = ApprovalAction.objects.filter(step__route=obj).select_related("actor")
         return ApprovalActionSerializer(actions, many=True).data
+
+
+class DocumentCommentSerializer(serializers.ModelSerializer):
+    author = UserShortSerializer(read_only=True)
+
+    class Meta:
+        model = DocumentComment
+        fields = [
+            "id",
+            "document",
+            "author",
+            "text",
+            "comment_type",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "document",
+            "author",
+            "comment_type",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate_text(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Комментарий не может быть пустым")
+        return value
+
+
+class DocumentCommentCreateSerializer(serializers.Serializer):
+    text = serializers.CharField(allow_blank=False)
+
+    def validate_text(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Комментарий не может быть пустым")
+        return value
+
+
+class DocumentHistorySerializer(serializers.ModelSerializer):
+    user = UserShortSerializer(read_only=True)
+
+    class Meta:
+        model = DocumentHistory
+        fields = [
+            "id",
+            "document",
+            "user",
+            "action",
+            "old_values",
+            "new_values",
+            "description",
+            "created_at",
+        ]
+        read_only_fields = fields

@@ -6,7 +6,9 @@ from .models import (
     ApprovalStep,
     Document,
     DocumentCategory,
+    DocumentComment,
     DocumentFile,
+    DocumentHistory,
     DocumentNumberCounter,
 )
 
@@ -71,3 +73,26 @@ class ApprovalActionAdmin(admin.ModelAdmin):
     list_display = ("document", "step", "actor", "action", "created_at")
     list_filter = ("action",)
     readonly_fields = ("document", "step", "actor", "action", "comment", "created_at")
+
+
+@admin.register(DocumentComment)
+class DocumentCommentAdmin(admin.ModelAdmin):
+    list_display = ("document", "author", "comment_type", "created_at")
+    list_filter = ("comment_type",)
+    search_fields = ("text", "document__title")
+
+
+@admin.register(DocumentHistory)
+class DocumentHistoryAdmin(admin.ModelAdmin):
+    list_display = ("document", "user", "action", "created_at")
+    list_filter = ("action",)
+    search_fields = ("document__title", "description")
+    readonly_fields = (
+        "document",
+        "user",
+        "action",
+        "old_values",
+        "new_values",
+        "description",
+        "created_at",
+    )

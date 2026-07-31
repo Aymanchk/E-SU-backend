@@ -17,7 +17,11 @@ from .models import (
     Document,
     DocumentCategory,
     DocumentCategoryStatus,
+    DocumentComment,
+    DocumentCommentType,
     DocumentFile,
+    DocumentHistory,
+    DocumentHistoryAction,
     DocumentNumberCounter,
     DocumentStatus,
 )
@@ -108,6 +112,14 @@ class DocumentService:
         document.status = DocumentStatus.COMPLETED
         document.completed_at = timezone.now()
         document.save(update_fields=["status", "completed_at", "updated_at"])
+        HistoryService.record(
+            document,
+            user,
+            DocumentHistoryAction.COMPLETED,
+            old_values={"status": DocumentStatus.APPROVED},
+            new_values={"status": document.status, "completed_at": document.completed_at},
+            description="Документ завершён",
+        )
         return document
 
     @staticmethod
@@ -117,9 +129,18 @@ class DocumentService:
             raise ValidationError("Архивировать можно согласованный или завершённый документ")
         if not (user.is_admin_role or user.has_permission("documents.archive")):
             raise PermissionDenied("Недостаточно прав для архивирования документа")
+        previous_status = document.status
         document.status = DocumentStatus.ARCHIVED
         document.archived_at = timezone.now()
         document.save(update_fields=["status", "archived_at", "updated_at"])
+        HistoryService.record(
+            document,
+            user,
+            DocumentHistoryAction.ARCHIVED,
+            old_values={"status": previous_status},
+            new_values={"status": document.status, "archived_at": document.archived_at},
+            description="Документ архивирован",
+        )
         return document
 
     @staticmethod
@@ -129,11 +150,20 @@ class DocumentService:
             raise ValidationError("Документ не находится в архиве")
         if not (user.is_admin_role or user.has_permission("documents.archive")):
             raise PermissionDenied("Недостаточно прав для восстановления документа")
-        document.status = (
+        restored_status = (
             DocumentStatus.COMPLETED if document.completed_at else DocumentStatus.APPROVED
         )
+        document.status = restored_status
         document.archived_at = None
         document.save(update_fields=["status", "archived_at", "updated_at"])
+        HistoryService.record(
+            document,
+            user,
+            DocumentHistoryAction.RESTORED,
+            old_values={"status": DocumentStatus.ARCHIVED},
+            new_values={"status": restored_status},
+            description="Документ восстановлен из архива",
+        )
         return document
 
 
@@ -183,6 +213,14 @@ class RegistrationService:
             f"ESU-{category_code}-{year}-{counter.last_number:06d}"
         )
         document.save(update_fields=["registration_number", "updated_at"])
+        HistoryService.record(
+            document,
+            user,
+            DocumentHistoryAction.REGISTERED,
+            old_values={"registration_number": None},
+            new_values={"registration_number": document.registration_number},
+            description=f"Документ зарегистрирован: {document.registration_number}",
+        )
         return document
 
 
@@ -257,7 +295,7 @@ class FileService:
         if make_main:
             document.files.filter(is_main=True).update(is_main=False)
 
-        return DocumentFile.objects.create(
+        document_file = DocumentFile.objects.create(
             document=document,
             file=uploaded_file,
             original_name=Path(uploaded_file.name).name,
@@ -267,11 +305,34 @@ class FileService:
             is_main=make_main,
             uploaded_by=user,
         )
+        HistoryService.record(
+            document,
+            user,
+            DocumentHistoryAction.FILE_UPLOADED,
+            new_values={
+                "file_id": document_file.id,
+                "original_name": document_file.original_name,
+                "size": document_file.size,
+            },
+            description=f"Загружен файл {document_file.original_name}",
+        )
+        return document_file
 
     @staticmethod
     @transaction.atomic
     def delete(document_file: DocumentFile, user) -> None:
         DocumentService.ensure_can_edit(document_file.document, user)
+        HistoryService.record(
+            document_file.document,
+            user,
+            DocumentHistoryAction.FILE_DELETED,
+            old_values={
+                "file_id": document_file.id,
+                "original_name": document_file.original_name,
+                "size": document_file.size,
+            },
+            description=f"Удалён файл {document_file.original_name}",
+        )
         storage = document_file.file.storage
         stored_name = document_file.file.name
         document_file.delete()
@@ -293,6 +354,7 @@ class ApprovalService:
     def submit(cls, document: Document, user, approvers: list) -> ApprovalRoute:
         document = cls._locked_document(document)
         DocumentService.ensure_can_edit(document, user)
+        previous_status = document.status
 
         ApprovalRoute.objects.filter(
             document=document, status=ApprovalRouteStatus.ACTIVE
@@ -335,6 +397,27 @@ class ApprovalService:
                 "updated_at",
             ]
         )
+        history_action = (
+            DocumentHistoryAction.RESUBMITTED
+            if previous_status == DocumentStatus.RETURNED
+            else DocumentHistoryAction.SUBMITTED
+        )
+        HistoryService.record(
+            document,
+            user,
+            history_action,
+            old_values={"status": previous_status},
+            new_values={
+                "status": document.status,
+                "route_id": route.id,
+                "approvers": [approver.id for approver in approvers],
+            },
+            description=(
+                "Документ повторно отправлен на согласование"
+                if history_action == DocumentHistoryAction.RESUBMITTED
+                else "Документ отправлен на согласование"
+            ),
+        )
         return route
 
     @classmethod
@@ -366,6 +449,13 @@ class ApprovalService:
             action=ApprovalActionType.APPROVE,
             comment=comment,
         )
+        if comment:
+            DocumentComment.objects.create(
+                document=document,
+                author=user,
+                text=comment,
+                comment_type=DocumentCommentType.APPROVAL,
+            )
 
         next_step = (
             ApprovalStep.objects.select_for_update()
@@ -393,6 +483,18 @@ class ApprovalService:
                     "updated_at",
                 ]
             )
+        HistoryService.record(
+            document,
+            user,
+            DocumentHistoryAction.APPROVED,
+            old_values={"approval_step": step.order, "step_status": "current"},
+            new_values={
+                "approval_step": step.order,
+                "step_status": step.status,
+                "document_status": document.status,
+            },
+            description=f"Согласован шаг {step.order}",
+        )
         return route
 
     @classmethod
@@ -427,6 +529,12 @@ class ApprovalService:
             action=ApprovalActionType.RETURN,
             comment=comment,
         )
+        DocumentComment.objects.create(
+            document=document,
+            author=user,
+            text=comment,
+            comment_type=DocumentCommentType.RETURN_REASON,
+        )
 
         route.status = ApprovalRouteStatus.RETURNED
         route.completed_at = now
@@ -434,4 +542,106 @@ class ApprovalService:
         document.status = DocumentStatus.RETURNED
         document.current_approval_step = None
         document.save(update_fields=["status", "current_approval_step", "updated_at"])
+        HistoryService.record(
+            document,
+            user,
+            DocumentHistoryAction.RETURNED,
+            old_values={"status": DocumentStatus.IN_REVIEW, "approval_step": step.order},
+            new_values={"status": document.status, "reason": comment},
+            description=f"Документ возвращён на шаге {step.order}",
+        )
         return route
+
+
+class CommentService:
+    @staticmethod
+    @transaction.atomic
+    def create(document: Document, user, text: str) -> DocumentComment:
+        if document.status == DocumentStatus.ARCHIVED:
+            raise ValidationError("Архивированный документ доступен только для чтения")
+        return DocumentComment.objects.create(
+            document=document,
+            author=user,
+            text=text,
+            comment_type=DocumentCommentType.GENERAL,
+        )
+
+    @staticmethod
+    def ensure_editable(comment: DocumentComment, user) -> None:
+        if comment.comment_type != DocumentCommentType.GENERAL:
+            raise ValidationError("Системные комментарии и причины возврата нельзя изменять")
+        if comment.author_id != user.id:
+            raise PermissionDenied("Можно изменять только собственный комментарий")
+        if comment.document.status == DocumentStatus.ARCHIVED:
+            raise ValidationError("Архивированный документ доступен только для чтения")
+
+    @classmethod
+    @transaction.atomic
+    def update(cls, comment: DocumentComment, user, text: str) -> DocumentComment:
+        cls.ensure_editable(comment, user)
+        comment.text = text
+        comment.save(update_fields=["text", "updated_at"])
+        return comment
+
+    @classmethod
+    @transaction.atomic
+    def delete(cls, comment: DocumentComment, user) -> None:
+        cls.ensure_editable(comment, user)
+        comment.delete()
+
+
+class HistoryService:
+    TRACKED_FIELDS = (
+        "registration_number",
+        "title",
+        "description",
+        "document_type",
+        "category_id",
+        "department_id",
+        "responsible_id",
+        "priority",
+        "status",
+        "deadline",
+    )
+
+    @staticmethod
+    def _normalize(value):
+        if value is None or isinstance(value, str | int | float | bool):
+            return value
+        if isinstance(value, dict):
+            return {key: HistoryService._normalize(item) for key, item in value.items()}
+        if isinstance(value, list | tuple | set):
+            return [HistoryService._normalize(item) for item in value]
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return str(value)
+
+    @classmethod
+    def snapshot(cls, document: Document) -> dict:
+        return {
+            field: cls._normalize(getattr(document, field))
+            for field in cls.TRACKED_FIELDS
+        }
+
+    @classmethod
+    def normalize_mapping(cls, values: dict | None) -> dict:
+        return {key: cls._normalize(value) for key, value in (values or {}).items()}
+
+    @classmethod
+    def record(
+        cls,
+        document: Document,
+        user,
+        action: str,
+        old_values=None,
+        new_values=None,
+        description="",
+    ) -> DocumentHistory:
+        return DocumentHistory.objects.create(
+            document=document,
+            user=user,
+            action=action,
+            old_values=cls.normalize_mapping(old_values),
+            new_values=cls.normalize_mapping(new_values),
+            description=description,
+        )

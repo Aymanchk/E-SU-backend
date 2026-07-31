@@ -347,3 +347,91 @@ class ApprovalAction(UUIDModel):
 
     def __str__(self):
         return f"{self.document}: {self.action}"
+
+
+class DocumentCommentType(models.TextChoices):
+    GENERAL = "general", "Обычный"
+    APPROVAL = "approval", "Комментарий согласования"
+    RETURN_REASON = "return_reason", "Причина возврата"
+    SYSTEM = "system", "Системный"
+
+
+class DocumentComment(UUIDModel):
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name="comments",
+        verbose_name="Документ",
+    )
+    author = models.ForeignKey(
+        "accounts.User",
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="document_comments",
+        verbose_name="Автор",
+    )
+    text = models.TextField("Текст")
+    comment_type = models.CharField(
+        "Тип",
+        max_length=30,
+        choices=DocumentCommentType.choices,
+        default=DocumentCommentType.GENERAL,
+        db_index=True,
+    )
+    created_at = models.DateTimeField("Создан", auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField("Изменён", auto_now=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        verbose_name = "Комментарий документа"
+        verbose_name_plural = "Комментарии документов"
+
+    def __str__(self):
+        return self.text[:80]
+
+
+class DocumentHistoryAction(models.TextChoices):
+    CREATED = "created", "Создание"
+    UPDATED = "updated", "Редактирование"
+    FILE_UPLOADED = "file_uploaded", "Загрузка файла"
+    FILE_DELETED = "file_deleted", "Удаление файла"
+    SUBMITTED = "submitted", "Отправка на согласование"
+    APPROVED = "approved", "Согласование"
+    RETURNED = "returned", "Возврат"
+    RESUBMITTED = "resubmitted", "Повторная отправка"
+    REGISTERED = "registered", "Регистрация"
+    COMPLETED = "completed", "Завершение"
+    ARCHIVED = "archived", "Архивирование"
+    RESTORED = "restored", "Восстановление"
+
+
+class DocumentHistory(UUIDModel):
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name="history",
+        verbose_name="Документ",
+    )
+    user = models.ForeignKey(
+        "accounts.User",
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="document_history_entries",
+        verbose_name="Пользователь",
+    )
+    action = models.CharField(
+        "Действие", max_length=30, choices=DocumentHistoryAction.choices, db_index=True
+    )
+    old_values = models.JSONField("Старые значения", default=dict, blank=True)
+    new_values = models.JSONField("Новые значения", default=dict, blank=True)
+    description = models.TextField("Описание", blank=True)
+    created_at = models.DateTimeField("Создано", auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        verbose_name = "История документа"
+        verbose_name_plural = "История документов"
+        indexes = [models.Index(fields=["document", "created_at"])]
+
+    def __str__(self):
+        return f"{self.document}: {self.action}"

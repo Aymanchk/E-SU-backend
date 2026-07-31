@@ -263,6 +263,8 @@ SPECTACULAR_SETTINGS = {
         "ApprovalRouteStatusEnum": "apps.documents.models.ApprovalRouteStatus",
         "ApprovalStepStatusEnum": "apps.documents.models.ApprovalStepStatus",
         "ApprovalActionTypeEnum": "apps.documents.models.ApprovalActionType",
+        "DocumentCommentTypeEnum": "apps.documents.models.DocumentCommentType",
+        "DocumentHistoryActionEnum": "apps.documents.models.DocumentHistoryAction",
     },
     "TAGS": [
         {"name": "Auth", "description": "Авторизация и профиль"},
