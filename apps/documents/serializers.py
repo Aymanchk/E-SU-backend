@@ -299,3 +299,15 @@ class DocumentHistorySerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = fields
+
+
+class DashboardSerializer(serializers.Serializer):
+    total_documents = serializers.IntegerField()
+    in_review = serializers.IntegerField()
+    returned = serializers.IntegerField()
+    overdue = serializers.IntegerField()
+    completed = serializers.IntegerField()
+    approval_tasks = serializers.IntegerField()
+    recent_documents = DocumentListSerializer(many=True)
+    upcoming_deadlines = DocumentListSerializer(many=True)
+    recent_actions = DocumentHistorySerializer(many=True)

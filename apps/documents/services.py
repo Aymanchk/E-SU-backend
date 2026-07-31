@@ -3,7 +3,7 @@ from zipfile import BadZipFile, ZipFile
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import Q, QuerySet
+from django.db.models import Count, Q, QuerySet
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
@@ -705,3 +705,54 @@ class HistoryService:
             new_values=cls.normalize_mapping(new_values),
             description=description,
         )
+
+
+class DashboardService:
+    LIST_LIMIT = 5
+    ACTIONS_LIMIT = 10
+
+    @staticmethod
+    def documents_for(user) -> QuerySet:
+        queryset = Document.objects.all()
+        if not (user.is_superuser or user.is_admin_role):
+            role_code = user.role.code if user.role_id else None
+            if role_code == "employee":
+                queryset = queryset.filter(author=user)
+            else:
+                queryset = DocumentService.visible_to(user, queryset)
+
+        return queryset.select_related(
+            "category", "author", "department", "responsible"
+        )
+
+    @classmethod
+    def build(cls, user) -> dict:
+        documents = cls.documents_for(user)
+        counters = documents.aggregate(
+            total_documents=Count("id"),
+            in_review=Count("id", filter=Q(status=DocumentStatus.IN_REVIEW)),
+            returned=Count("id", filter=Q(status=DocumentStatus.RETURNED)),
+            overdue=Count("id", filter=Q(status=DocumentStatus.OVERDUE)),
+            completed=Count("id", filter=Q(status=DocumentStatus.COMPLETED)),
+        )
+
+        approval_tasks = ApprovalStep.objects.filter(status=ApprovalStepStatus.CURRENT)
+        if not (user.is_superuser or user.is_admin_role):
+            approval_tasks = approval_tasks.filter(approver=user)
+
+        visible_ids = documents.values("id")
+        return {
+            **counters,
+            "approval_tasks": approval_tasks.count(),
+            "recent_documents": documents.order_by("-created_at")[: cls.LIST_LIMIT],
+            "upcoming_deadlines": documents.filter(
+                deadline__gte=timezone.now(),
+            )
+            .exclude(status__in=[DocumentStatus.COMPLETED, DocumentStatus.ARCHIVED])
+            .order_by("deadline")[: cls.LIST_LIMIT],
+            "recent_actions": DocumentHistory.objects.filter(
+                document_id__in=visible_ids
+            )
+            .select_related("document", "user")
+            .order_by("-created_at")[: cls.ACTIONS_LIMIT],
+        }
