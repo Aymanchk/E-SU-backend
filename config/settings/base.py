@@ -236,6 +236,9 @@ SPECTACULAR_SETTINGS = {
     "ENUM_NAME_OVERRIDES": {
         "UserStatusEnum": "apps.accounts.models.UserStatus",
         "DepartmentStatusEnum": "apps.organizations.models.DepartmentStatus",
+        "DocumentCategoryStatusEnum": "apps.documents.models.DocumentCategoryStatus",
+        "DocumentStatusEnum": "apps.documents.models.DocumentStatus",
+        "DocumentPriorityEnum": "apps.documents.models.DocumentPriority",
     },
     "TAGS": [
         {"name": "Auth", "description": "Авторизация и профиль"},
