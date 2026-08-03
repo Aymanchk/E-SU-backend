@@ -1,0 +1,202 @@
+from datetime import timedelta
+
+import pytest
+from django.core import mail
+from django.utils import timezone
+
+from apps.documents.models import Document, DocumentCategory, DocumentStatus
+from apps.notifications.models import Notification, NotificationType
+from apps.notifications.services import DeadlineService, NotificationService
+from apps.notifications.tasks import send_notification_email
+
+pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture
+def notification_category(admin):
+    return DocumentCategory.objects.create(
+        name="Уведомления",
+        code="notifications",
+        retention_period_days=365,
+        created_by=admin,
+        updated_by=admin,
+    )
+
+
+@pytest.fixture
+def notification_document(employee, child_department, notification_category):
+    return Document.objects.create(
+        title="Документ с уведомлениями",
+        document_type="memo",
+        category=notification_category,
+        author=employee,
+        department=child_department,
+        responsible=employee,
+    )
+
+
+def create_notification(recipient, document=None, **overrides):
+    defaults = {
+        "recipient": recipient,
+        "notification_type": NotificationType.COMMENT_ADDED,
+        "title": "Новое уведомление",
+        "message": "Текст уведомления",
+        "document": document,
+        "send_email": False,
+    }
+    defaults.update(overrides)
+    return NotificationService.create(**defaults)
+
+
+class TestNotificationApi:
+    def test_list_contains_only_current_users_notifications(
+        self, employee_client, employee, manager, notification_document
+    ):
+        own = create_notification(employee, notification_document)
+        create_notification(manager, notification_document)
+
+        response = employee_client.get("/api/notifications/")
+        ids = [item["id"] for item in response.json()["data"]["results"]]
+        assert ids == [str(own.id)]
+
+    def test_unread_count_and_read(self, employee_client, employee, notification_document):
+        notification = create_notification(employee, notification_document)
+        assert employee_client.get("/api/notifications/unread-count/").json()["data"] == {
+            "count": 1
+        }
+
+        response = employee_client.post(f"/api/notifications/{notification.id}/read/")
+        assert response.status_code == 200
+        notification.refresh_from_db()
+        assert notification.is_read is True
+        assert notification.read_at is not None
+
+    def test_read_all(self, employee_client, employee, notification_document):
+        create_notification(employee, notification_document)
+        create_notification(
+            employee,
+            notification_document,
+            notification_type=NotificationType.DOCUMENT_APPROVED,
+        )
+        response = employee_client.post("/api/notifications/read-all/")
+        assert response.json()["data"]["updated"] == 2
+        assert not Notification.objects.filter(recipient=employee, is_read=False).exists()
+
+    def test_cannot_read_another_users_notification(
+        self, employee_client, manager, notification_document
+    ):
+        notification = create_notification(manager, notification_document)
+        response = employee_client.post(f"/api/notifications/{notification.id}/read/")
+        assert response.status_code == 404
+
+    def test_filters(self, employee_client, employee, notification_document):
+        create_notification(employee, notification_document)
+        approved = create_notification(
+            employee,
+            notification_document,
+            notification_type=NotificationType.DOCUMENT_APPROVED,
+        )
+        NotificationService.mark_read(approved)
+        response = employee_client.get(
+            "/api/notifications/?type=document_approved&is_read=true"
+        )
+        assert response.json()["data"]["count"] == 1
+
+
+class TestNotificationService:
+    def test_dedupe_key_prevents_duplicates(self, employee, notification_document):
+        for _ in range(2):
+            create_notification(
+                employee,
+                notification_document,
+                dedupe_key="same-event",
+            )
+        assert Notification.objects.filter(dedupe_key="same-event").count() == 1
+
+    def test_email_task(self, settings, employee, notification_document):
+        settings.EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
+        notification = create_notification(employee, notification_document)
+        send_notification_email.run(str(notification.id))
+        assert len(mail.outbox) == 1
+        assert mail.outbox[0].to == [employee.email]
+        assert "E-SU" in mail.outbox[0].subject
+
+
+class TestDeadlineService:
+    def test_deadline_soon_is_not_duplicated(self, employee, notification_document):
+        now = timezone.now()
+        notification_document.deadline = now + timedelta(hours=12)
+        notification_document.save(update_fields=["deadline"])
+
+        first = DeadlineService.check(now=now)
+        second = DeadlineService.check(now=now)
+        assert first == {"deadline_soon": 1, "overdue": 0}
+        assert second == {"deadline_soon": 0, "overdue": 0}
+        assert Notification.objects.filter(type=NotificationType.DEADLINE_SOON).count() == 1
+
+    def test_overdue_changes_allowed_status(self, employee, notification_document):
+        now = timezone.now()
+        notification_document.deadline = now - timedelta(minutes=1)
+        notification_document.save(update_fields=["deadline"])
+        DeadlineService.check(now=now)
+
+        notification_document.refresh_from_db()
+        assert notification_document.status == DocumentStatus.OVERDUE
+        assert Notification.objects.filter(type=NotificationType.DOCUMENT_OVERDUE).count() == 1
+
+    def test_in_review_is_not_changed_to_overdue(self, employee, notification_document):
+        now = timezone.now()
+        notification_document.deadline = now - timedelta(minutes=1)
+        notification_document.status = DocumentStatus.IN_REVIEW
+        notification_document.save(update_fields=["deadline", "status"])
+        DeadlineService.check(now=now)
+
+        notification_document.refresh_from_db()
+        assert notification_document.status == DocumentStatus.IN_REVIEW
+        assert Notification.objects.filter(type=NotificationType.DOCUMENT_OVERDUE).exists()
+
+
+class TestNotificationIntegrations:
+    def test_submit_and_approve_create_notifications(
+        self,
+        employee_client,
+        manager_client,
+        employee,
+        manager,
+        notification_document,
+    ):
+        employee_client.post(
+            f"/api/documents/{notification_document.id}/submit/",
+            {"approvers": [str(manager.id)]},
+            format="json",
+        )
+        assert Notification.objects.filter(
+            recipient=manager, type=NotificationType.APPROVAL_REQUIRED
+        ).exists()
+        assert Notification.objects.filter(
+            recipient=employee, type=NotificationType.DOCUMENT_SUBMITTED
+        ).exists()
+
+        manager_client.post(f"/api/documents/{notification_document.id}/approve/", {})
+        assert Notification.objects.filter(
+            recipient=employee, type=NotificationType.DOCUMENT_APPROVED
+        ).exists()
+
+    def test_comment_notifies_other_participant(
+        self,
+        employee_client,
+        user_factory,
+        child_department,
+        notification_document,
+    ):
+        responsible = user_factory(department=child_department)
+        notification_document.responsible = responsible
+        notification_document.save(update_fields=["responsible"])
+        employee_client.post(
+            f"/api/documents/{notification_document.id}/comments/",
+            {"text": "Новый комментарий"},
+            format="json",
+        )
+        assert Notification.objects.filter(
+            recipient=responsible, type=NotificationType.COMMENT_ADDED
+        ).exists()

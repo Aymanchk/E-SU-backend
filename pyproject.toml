@@ -1,0 +1,72 @@
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.development"
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-q",
+    "--strict-markers",
+    "--reuse-db",
+]
+testpaths = ["tests"]
+markers = [
+    "slow: медленные тесты",
+]
+
+[tool.coverage.run]
+source = ["apps"]
+omit = [
+    "*/migrations/*",
+    "*/tests/*",
+    "*/admin.py",
+    "*/apps.py",
+    "manage.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "def __str__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [
+    ".venv",
+    "migrations",
+    "staticfiles",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort, сортировка импортов
+    "B",    # bugbear, частые ошибки
+    "C4",   # comprehensions
+    "UP",   # pyupgrade, современный синтаксис
+    "DJ",   # django-специфичные правила
+    "SIM",  # упрощение кода
+]
+ignore = [
+    "E501",   # длина строки, её контролирует форматтер
+    "B008",   # вызов функции в аргументах по умолчанию, нужен для DRF
+    "DJ001",  # null=True на CharField, иногда оправданно
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"config/settings/*.py" = ["F403", "F405"]
+"tests/*.py" = ["S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["apps", "config"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
