@@ -20,20 +20,12 @@ SECURE_HSTS_PRELOAD = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"
 
-# Хранилище файлов: S3 или MinIO
-STORAGES = {  # noqa: F405
-    "default": {
-        "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
-        "OPTIONS": {
-            "bucket_name": env("S3_BUCKET_NAME", default=""),  # noqa: F405
-            "endpoint_url": env("S3_ENDPOINT_URL", default=""),  # noqa: F405
-            "access_key": env("S3_ACCESS_KEY", default=""),  # noqa: F405
-            "secret_key": env("S3_SECRET_KEY", default=""),  # noqa: F405
-        },
-    },
-    "staticfiles": {
-        "BACKEND": "django.contrib.staticfiles.storage.ManifestStaticFilesStorage",
-    },
+# В production USE_S3=True обязателен; параметры S3/MinIO читаются в base.py.
+if not env.bool("USE_S3", default=False):  # noqa: F405
+    raise ValueError("В production необходимо установить USE_S3=True")
+
+STORAGES["staticfiles"] = {  # noqa: F405
+    "BACKEND": "django.contrib.staticfiles.storage.ManifestStaticFilesStorage"
 }
 
 LOGGING["root"]["level"] = "WARNING"  # noqa: F405

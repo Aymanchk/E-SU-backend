@@ -46,6 +46,7 @@ THIRD_PARTY_APPS = [
     "django_filters",
     "drf_spectacular",
     "corsheaders",
+    "storages",
 ]
 
 LOCAL_APPS = [
@@ -53,6 +54,8 @@ LOCAL_APPS = [
     "apps.accounts",
     "apps.organizations",
     "apps.audit",
+    "apps.documents",
+    "apps.notifications",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -152,10 +155,32 @@ MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Хранилище файлов. В development локальное, в production S3/MinIO.
-STORAGES = {
-    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
-    "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
-}
+if env.bool("USE_S3", default=False):
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.s3.S3Storage",
+            "OPTIONS": {
+                "bucket_name": env("S3_BUCKET_NAME", default="esu-documents"),
+                "endpoint_url": env("S3_ENDPOINT_URL", default=""),
+                "access_key": env("S3_ACCESS_KEY", default=""),
+                "secret_key": env("S3_SECRET_KEY", default=""),
+                "region_name": env("S3_REGION_NAME", default="us-east-1"),
+                "default_acl": None,
+                "querystring_auth": True,
+                "file_overwrite": False,
+            },
+        },
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    }
+else:
+    STORAGES = {
+        "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    }
+
+MAX_DOCUMENT_FILE_SIZE = env.int("MAX_DOCUMENT_FILE_SIZE", default=20 * 1024 * 1024)
+NOTIFICATION_EMAIL_ENABLED = env.bool("NOTIFICATION_EMAIL_ENABLED", default=False)
+DEADLINE_SOON_HOURS = env.int("DEADLINE_SOON_HOURS", default=24)
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +260,15 @@ SPECTACULAR_SETTINGS = {
     "ENUM_NAME_OVERRIDES": {
         "UserStatusEnum": "apps.accounts.models.UserStatus",
         "DepartmentStatusEnum": "apps.organizations.models.DepartmentStatus",
+        "DocumentCategoryStatusEnum": "apps.documents.models.DocumentCategoryStatus",
+        "DocumentStatusEnum": "apps.documents.models.DocumentStatus",
+        "DocumentPriorityEnum": "apps.documents.models.DocumentPriority",
+        "ApprovalRouteStatusEnum": "apps.documents.models.ApprovalRouteStatus",
+        "ApprovalStepStatusEnum": "apps.documents.models.ApprovalStepStatus",
+        "ApprovalActionTypeEnum": "apps.documents.models.ApprovalActionType",
+        "DocumentCommentTypeEnum": "apps.documents.models.DocumentCommentType",
+        "DocumentHistoryActionEnum": "apps.documents.models.DocumentHistoryAction",
+        "NotificationTypeEnum": "apps.notifications.models.NotificationType",
     },
     "TAGS": [
         {"name": "Auth", "description": "Авторизация и профиль"},
@@ -270,6 +304,12 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 300
 CELERY_TASK_SOFT_TIME_LIMIT = 240
+CELERY_BEAT_SCHEDULE = {
+    "check-document-deadlines-hourly": {
+        "task": "apps.notifications.tasks.check_document_deadlines",
+        "schedule": 3600.0,
+    }
+}
 
 
 # ---------------------------------------------------------------------------
