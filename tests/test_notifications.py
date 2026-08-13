@@ -55,17 +55,17 @@ class TestNotificationApi:
         own = create_notification(employee, notification_document)
         create_notification(manager, notification_document)
 
-        response = employee_client.get("/api/notifications/")
+        response = employee_client.get("/api/v1/notifications/")
         ids = [item["id"] for item in response.json()["data"]["results"]]
         assert ids == [str(own.id)]
 
     def test_unread_count_and_read(self, employee_client, employee, notification_document):
         notification = create_notification(employee, notification_document)
-        assert employee_client.get("/api/notifications/unread-count/").json()["data"] == {
+        assert employee_client.get("/api/v1/notifications/unread-count/").json()["data"] == {
             "count": 1
         }
 
-        response = employee_client.post(f"/api/notifications/{notification.id}/read/")
+        response = employee_client.post(f"/api/v1/notifications/{notification.id}/read/")
         assert response.status_code == 200
         notification.refresh_from_db()
         assert notification.is_read is True
@@ -78,7 +78,7 @@ class TestNotificationApi:
             notification_document,
             notification_type=NotificationType.DOCUMENT_APPROVED,
         )
-        response = employee_client.post("/api/notifications/read-all/")
+        response = employee_client.post("/api/v1/notifications/read-all/")
         assert response.json()["data"]["updated"] == 2
         assert not Notification.objects.filter(recipient=employee, is_read=False).exists()
 
@@ -86,7 +86,7 @@ class TestNotificationApi:
         self, employee_client, manager, notification_document
     ):
         notification = create_notification(manager, notification_document)
-        response = employee_client.post(f"/api/notifications/{notification.id}/read/")
+        response = employee_client.post(f"/api/v1/notifications/{notification.id}/read/")
         assert response.status_code == 404
 
     def test_filters(self, employee_client, employee, notification_document):
@@ -97,9 +97,7 @@ class TestNotificationApi:
             notification_type=NotificationType.DOCUMENT_APPROVED,
         )
         NotificationService.mark_read(approved)
-        response = employee_client.get(
-            "/api/notifications/?type=document_approved&is_read=true"
-        )
+        response = employee_client.get("/api/v1/notifications/?type=document_approved&is_read=true")
         assert response.json()["data"]["count"] == 1
 
 
@@ -166,7 +164,7 @@ class TestNotificationIntegrations:
         notification_document,
     ):
         employee_client.post(
-            f"/api/documents/{notification_document.id}/submit/",
+            f"/api/v1/documents/{notification_document.id}/submit/",
             {"approvers": [str(manager.id)]},
             format="json",
         )
@@ -177,7 +175,7 @@ class TestNotificationIntegrations:
             recipient=employee, type=NotificationType.DOCUMENT_SUBMITTED
         ).exists()
 
-        manager_client.post(f"/api/documents/{notification_document.id}/approve/", {})
+        manager_client.post(f"/api/v1/documents/{notification_document.id}/approve/", {})
         assert Notification.objects.filter(
             recipient=employee, type=NotificationType.DOCUMENT_APPROVED
         ).exists()
@@ -193,7 +191,7 @@ class TestNotificationIntegrations:
         notification_document.responsible = responsible
         notification_document.save(update_fields=["responsible"])
         employee_client.post(
-            f"/api/documents/{notification_document.id}/comments/",
+            f"/api/v1/documents/{notification_document.id}/comments/",
             {"text": "Новый комментарий"},
             format="json",
         )

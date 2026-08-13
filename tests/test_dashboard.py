@@ -50,9 +50,7 @@ class TestDashboardAccess:
     def test_employee_sees_only_authored_documents(
         self, employee_client, employee, manager, child_department, category
     ):
-        own = create_document(
-            category, employee, child_department, status=DocumentStatus.IN_REVIEW
-        )
+        own = create_document(category, employee, child_department, status=DocumentStatus.IN_REVIEW)
         create_document(
             category,
             manager,
@@ -64,7 +62,7 @@ class TestDashboardAccess:
             document=own, user=employee, action=DocumentHistoryAction.CREATED
         )
 
-        response = employee_client.get("/api/dashboard/")
+        response = employee_client.get("/api/v1/dashboard/")
 
         assert response.status_code == 200
         data = response.json()["data"]
@@ -81,9 +79,7 @@ class TestDashboardAccess:
         outsider = user_factory(department=other_department)
         department_document = create_document(category, employee, child_department)
         hidden_document = create_document(category, outsider, other_department)
-        route = ApprovalRoute.objects.create(
-            document=department_document, created_by=employee
-        )
+        route = ApprovalRoute.objects.create(document=department_document, created_by=employee)
         ApprovalStep.objects.create(
             route=route,
             document=department_document,
@@ -91,9 +87,7 @@ class TestDashboardAccess:
             approver=manager,
             status=ApprovalStepStatus.CURRENT,
         )
-        hidden_route = ApprovalRoute.objects.create(
-            document=hidden_document, created_by=outsider
-        )
+        hidden_route = ApprovalRoute.objects.create(document=hidden_document, created_by=outsider)
         ApprovalStep.objects.create(
             route=hidden_route,
             document=hidden_document,
@@ -102,7 +96,7 @@ class TestDashboardAccess:
             status=ApprovalStepStatus.CURRENT,
         )
 
-        data = manager_client.get("/api/dashboard/").json()["data"]
+        data = manager_client.get("/api/v1/dashboard/").json()["data"]
 
         assert data["total_documents"] == 1
         assert data["approval_tasks"] == 1
@@ -110,12 +104,10 @@ class TestDashboardAccess:
     def test_admin_sees_global_statistics(
         self, admin_client, admin, employee, child_department, root_department, category
     ):
-        create_document(
-            category, employee, child_department, status=DocumentStatus.COMPLETED
-        )
+        create_document(category, employee, child_department, status=DocumentStatus.COMPLETED)
         create_document(category, admin, root_department, status=DocumentStatus.OVERDUE)
 
-        data = admin_client.get("/api/dashboard/").json()["data"]
+        data = admin_client.get("/api/v1/dashboard/").json()["data"]
 
         assert data["total_documents"] == 2
         assert data["completed"] == 1
@@ -149,7 +141,7 @@ class TestDashboardContent:
                 action=DocumentHistoryAction.UPDATED,
             )
 
-        data = employee_client.get("/api/dashboard/").json()["data"]
+        data = employee_client.get("/api/v1/dashboard/").json()["data"]
 
         assert len(data["recent_documents"]) == 5
         assert len(data["upcoming_deadlines"]) == 5

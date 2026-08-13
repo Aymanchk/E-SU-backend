@@ -36,9 +36,7 @@ def approved_document(employee, child_department, registration_category):
 
 @pytest.fixture
 def office(user_factory, child_department):
-    return user_factory(
-        email="office@esu.kg", role_code="office", department=child_department
-    )
+    return user_factory(email="office@esu.kg", role_code="office", department=child_department)
 
 
 @pytest.fixture
@@ -48,7 +46,7 @@ def office_client(auth_client, office):
 
 class TestDocumentRegistrationApi:
     def test_office_registers_approved_document(self, office_client, approved_document):
-        response = office_client.post(f"/api/documents/{approved_document.id}/register/")
+        response = office_client.post(f"/api/v1/documents/{approved_document.id}/register/")
 
         assert response.status_code == 200
         number = response.json()["data"]["registration_number"]
@@ -57,36 +55,34 @@ class TestDocumentRegistrationApi:
 
     def test_admin_can_register(self, admin_client, approved_document):
         assert (
-            admin_client.post(f"/api/documents/{approved_document.id}/register/").status_code
+            admin_client.post(f"/api/v1/documents/{approved_document.id}/register/").status_code
             == 200
         )
 
     def test_employee_cannot_register(self, employee_client, approved_document):
-        response = employee_client.post(f"/api/documents/{approved_document.id}/register/")
+        response = employee_client.post(f"/api/v1/documents/{approved_document.id}/register/")
         assert response.status_code == 403
 
-    def test_only_approved_document_can_be_registered(
-        self, office_client, approved_document
-    ):
+    def test_only_approved_document_can_be_registered(self, office_client, approved_document):
         approved_document.status = DocumentStatus.IN_REVIEW
         approved_document.save(update_fields=["status"])
-        response = office_client.post(f"/api/documents/{approved_document.id}/register/")
+        response = office_client.post(f"/api/v1/documents/{approved_document.id}/register/")
         assert response.status_code == 400
 
     def test_cannot_register_twice(self, office_client, approved_document):
-        office_client.post(f"/api/documents/{approved_document.id}/register/")
-        response = office_client.post(f"/api/documents/{approved_document.id}/register/")
+        office_client.post(f"/api/v1/documents/{approved_document.id}/register/")
+        response = office_client.post(f"/api/v1/documents/{approved_document.id}/register/")
         assert response.status_code == 400
 
     def test_registration_number_cannot_be_changed(self, admin_client, approved_document):
         registered = admin_client.post(
-            f"/api/documents/{approved_document.id}/register/"
+            f"/api/v1/documents/{approved_document.id}/register/"
         ).json()["data"]["registration_number"]
         approved_document.status = DocumentStatus.RETURNED
         approved_document.save(update_fields=["status"])
 
         admin_client.patch(
-            f"/api/documents/{approved_document.id}/",
+            f"/api/v1/documents/{approved_document.id}/",
             {"registration_number": "MANUAL-1", "title": "Изменено"},
             format="json",
         )
@@ -103,9 +99,9 @@ class TestDocumentRegistrationApi:
             status=DocumentStatus.APPROVED,
         )
         first_number = office_client.post(
-            f"/api/documents/{approved_document.id}/register/"
+            f"/api/v1/documents/{approved_document.id}/register/"
         ).json()["data"]["registration_number"]
-        second_number = office_client.post(f"/api/documents/{second.id}/register/").json()[
+        second_number = office_client.post(f"/api/v1/documents/{second.id}/register/").json()[
             "data"
         ]["registration_number"]
 
@@ -115,9 +111,7 @@ class TestDocumentRegistrationApi:
 
 
 def test_counter_is_unique_per_category_and_year(registration_category):
-    DocumentNumberCounter.objects.create(
-        category=registration_category, year=2026, last_number=1
-    )
+    DocumentNumberCounter.objects.create(category=registration_category, year=2026, last_number=1)
     with pytest.raises(IntegrityError), transaction.atomic():
         DocumentNumberCounter.objects.create(
             category=registration_category, year=2026, last_number=2

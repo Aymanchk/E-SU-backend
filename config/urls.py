@@ -10,9 +10,22 @@ from drf_spectacular.views import (
 
 from apps.common.views import HealthView
 
+# Основные эндпоинты приложений. Подключаются под версионированным префиксом
+# /api/v1/ (канонический) и под старым /api/ ради обратной совместимости.
+# Views и serializers не дублируются — переиспользуются одни и те же URL-модули.
+api_patterns = [
+    path("auth/", include("apps.accounts.urls_auth")),
+    path("", include("apps.accounts.urls")),
+    path("", include("apps.organizations.urls")),
+    path("", include("apps.audit.urls")),
+    path("", include("apps.common.urls")),
+    path("", include("apps.documents.urls")),
+    path("", include("apps.notifications.urls")),
+]
+
 urlpatterns = [
     path("admin/", admin.site.urls),
-    # Служебные
+    # Служебные (вне версионирования)
     path("api/health/", HealthView.as_view(), name="health"),
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(
@@ -25,14 +38,10 @@ urlpatterns = [
         SpectacularRedocView.as_view(url_name="schema"),
         name="redoc",
     ),
-    # Приложения
-    path("api/auth/", include("apps.accounts.urls_auth")),
-    path("api/", include("apps.accounts.urls")),
-    path("api/", include("apps.organizations.urls")),
-    path("api/", include("apps.audit.urls")),
-    path("api/", include("apps.common.urls")),
-    path("api/", include("apps.documents.urls")),
-    path("api/", include("apps.notifications.urls")),
+    # Версионированный API (канонический)
+    path(f"api/{settings.API_VERSION}/", include((api_patterns, settings.API_VERSION))),
+    # Legacy-префикс, обратная совместимость (deprecated)
+    path("api/", include((api_patterns, "legacy"))),
 ]
 
 if settings.DEBUG:

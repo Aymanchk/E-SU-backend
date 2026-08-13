@@ -25,6 +25,9 @@ SECRET_KEY = env("SECRET_KEY")
 DEBUG = env("DEBUG")
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
 
+# Версия API. Основные эндпоинты подключаются под /api/${API_VERSION}/.
+API_VERSION = env("API_VERSION", default="v1")
+
 
 # ---------------------------------------------------------------------------
 # Приложения
@@ -247,8 +250,10 @@ SPECTACULAR_SETTINGS = {
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
-    "SCHEMA_PATH_PREFIX": "/api",
+    "SCHEMA_PATH_PREFIX": f"/api/{API_VERSION}",
     "SORT_OPERATIONS": False,
+    # Показывать в схеме только версионированные пути, legacy /api/ исключаем.
+    "PREPROCESSING_HOOKS": ["apps.common.schema.exclude_legacy_paths"],
     "SWAGGER_UI_SETTINGS": {
         "persistAuthorization": True,
         "displayOperationId": False,

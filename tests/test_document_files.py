@@ -14,9 +14,7 @@ def local_file_storage(settings, tmp_path):
     settings.MAX_DOCUMENT_FILE_SIZE = 1024
     settings.STORAGES = {
         "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
-        "staticfiles": {
-            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"
-        },
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
     }
 
 
@@ -45,7 +43,7 @@ def document(employee, admin, child_department):
 class TestDocumentFileUpload:
     def test_upload_and_list(self, employee_client, document):
         response = employee_client.post(
-            f"/api/documents/{document.id}/files/",
+            f"/api/v1/documents/{document.id}/files/",
             {"file": upload()},
             format="multipart",
         )
@@ -57,13 +55,13 @@ class TestDocumentFileUpload:
         assert data["mime_type"] == "application/pdf"
         assert data["is_main"] is True
 
-        listed = employee_client.get(f"/api/documents/{document.id}/files/")
+        listed = employee_client.get(f"/api/v1/documents/{document.id}/files/")
         assert listed.status_code == 200
         assert listed.json()["data"]["count"] == 1
 
     def test_storage_name_is_generated(self, employee_client, document):
         employee_client.post(
-            f"/api/documents/{document.id}/files/",
+            f"/api/v1/documents/{document.id}/files/",
             {"file": upload("private-report.pdf")},
             format="multipart",
         )
@@ -75,12 +73,12 @@ class TestDocumentFileUpload:
 
     def test_new_main_file_replaces_previous_main(self, employee_client, document):
         employee_client.post(
-            f"/api/documents/{document.id}/files/",
+            f"/api/v1/documents/{document.id}/files/",
             {"file": upload("first.pdf")},
             format="multipart",
         )
         employee_client.post(
-            f"/api/documents/{document.id}/files/",
+            f"/api/v1/documents/{document.id}/files/",
             {"file": upload("second.pdf"), "is_main": True},
             format="multipart",
         )
@@ -94,11 +92,9 @@ class TestDocumentFileUpload:
             ("image.jpg", "application/pdf"),
         ],
     )
-    def test_invalid_extension_or_mime_rejected(
-        self, employee_client, document, name, mime
-    ):
+    def test_invalid_extension_or_mime_rejected(self, employee_client, document, name, mime):
         response = employee_client.post(
-            f"/api/documents/{document.id}/files/",
+            f"/api/v1/documents/{document.id}/files/",
             {"file": upload(name, mime=mime)},
             format="multipart",
         )
@@ -107,7 +103,7 @@ class TestDocumentFileUpload:
 
     def test_oversized_file_rejected(self, employee_client, document):
         response = employee_client.post(
-            f"/api/documents/{document.id}/files/",
+            f"/api/v1/documents/{document.id}/files/",
             {"file": upload(content=b"x" * 1025)},
             format="multipart",
         )
@@ -115,7 +111,7 @@ class TestDocumentFileUpload:
 
     def test_executable_disguised_as_pdf_rejected(self, employee_client, document):
         response = employee_client.post(
-            f"/api/documents/{document.id}/files/",
+            f"/api/v1/documents/{document.id}/files/",
             {"file": upload(content=b"MZ executable")},
             format="multipart",
         )
@@ -123,12 +119,12 @@ class TestDocumentFileUpload:
 
     def test_files_locked_after_submit(self, employee_client, document, manager):
         employee_client.post(
-            f"/api/documents/{document.id}/submit/",
+            f"/api/v1/documents/{document.id}/submit/",
             {"approvers": [str(manager.id)]},
             format="json",
         )
         response = employee_client.post(
-            f"/api/documents/{document.id}/files/",
+            f"/api/v1/documents/{document.id}/files/",
             {"file": upload()},
             format="multipart",
         )
@@ -139,16 +135,14 @@ class TestDocumentFileDownloadAndDelete:
     @pytest.fixture
     def document_file(self, employee_client, document):
         employee_client.post(
-            f"/api/documents/{document.id}/files/",
+            f"/api/v1/documents/{document.id}/files/",
             {"file": upload(content=b"%PDF-download me")},
             format="multipart",
         )
         return DocumentFile.objects.get()
 
     def test_download(self, employee_client, document_file):
-        response = employee_client.get(
-            f"/api/document-files/{document_file.id}/download/"
-        )
+        response = employee_client.get(f"/api/v1/document-files/{document_file.id}/download/")
         assert response.status_code == 200
         assert b"".join(response.streaming_content) == b"%PDF-download me"
         assert "report.pdf" in response["Content-Disposition"]
@@ -157,9 +151,7 @@ class TestDocumentFileDownloadAndDelete:
         self, auth_client, user_factory, child_department, document_file
     ):
         other = user_factory(department=child_department)
-        response = auth_client(other).get(
-            f"/api/document-files/{document_file.id}/download/"
-        )
+        response = auth_client(other).get(f"/api/v1/document-files/{document_file.id}/download/")
         assert response.status_code == 404
 
     def test_delete_removes_database_and_storage_file(
@@ -171,19 +163,17 @@ class TestDocumentFileDownloadAndDelete:
         stored_path = Path(document_file.file.path)
         assert stored_path.exists()
         with django_capture_on_commit_callbacks(execute=True):
-            response = employee_client.delete(f"/api/document-files/{document_file.id}/")
+            response = employee_client.delete(f"/api/v1/document-files/{document_file.id}/")
         assert response.status_code == 204
         assert not DocumentFile.objects.filter(pk=document_file.pk).exists()
         assert not stored_path.exists()
 
-    def test_delete_blocked_after_submit(
-        self, employee_client, document, document_file, manager
-    ):
+    def test_delete_blocked_after_submit(self, employee_client, document, document_file, manager):
         employee_client.post(
-            f"/api/documents/{document.id}/submit/",
+            f"/api/v1/documents/{document.id}/submit/",
             {"approvers": [str(manager.id)]},
             format="json",
         )
-        response = employee_client.delete(f"/api/document-files/{document_file.id}/")
+        response = employee_client.delete(f"/api/v1/document-files/{document_file.id}/")
         assert response.status_code == 400
         assert DocumentFile.objects.filter(pk=document_file.pk).exists()
