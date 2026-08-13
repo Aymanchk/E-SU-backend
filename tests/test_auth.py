@@ -14,7 +14,7 @@ PASSWORD = "TestPass123!"
 class TestLogin:
     def test_success(self, api, employee):
         response = api.post(
-            "/api/auth/login/",
+            "/api/v1/auth/login/",
             {"email": employee.email, "password": PASSWORD},
             format="json",
         )
@@ -26,7 +26,7 @@ class TestLogin:
 
     def test_email_case_insensitive(self, api, employee):
         response = api.post(
-            "/api/auth/login/",
+            "/api/v1/auth/login/",
             {"email": employee.email.upper(), "password": PASSWORD},
             format="json",
         )
@@ -34,7 +34,7 @@ class TestLogin:
 
     def test_wrong_password(self, api, employee):
         response = api.post(
-            "/api/auth/login/",
+            "/api/v1/auth/login/",
             {"email": employee.email, "password": "wrong"},
             format="json",
         )
@@ -43,7 +43,7 @@ class TestLogin:
 
     def test_unknown_email(self, api, db):
         response = api.post(
-            "/api/auth/login/",
+            "/api/v1/auth/login/",
             {"email": "nobody@esu.kg", "password": PASSWORD},
             format="json",
         )
@@ -52,7 +52,7 @@ class TestLogin:
     def test_blocked_user_cannot_login(self, api, employee):
         employee.block()
         response = api.post(
-            "/api/auth/login/",
+            "/api/v1/auth/login/",
             {"email": employee.email, "password": PASSWORD},
             format="json",
         )
@@ -63,7 +63,7 @@ class TestLogin:
         employee.status = UserStatus.DISMISSED
         employee.save()
         response = api.post(
-            "/api/auth/login/",
+            "/api/v1/auth/login/",
             {"email": employee.email, "password": PASSWORD},
             format="json",
         )
@@ -72,7 +72,7 @@ class TestLogin:
     def test_deleted_user_cannot_login(self, api, employee):
         employee.delete()
         response = api.post(
-            "/api/auth/login/",
+            "/api/v1/auth/login/",
             {"email": employee.email, "password": PASSWORD},
             format="json",
         )
@@ -80,7 +80,7 @@ class TestLogin:
 
     def test_login_is_logged(self, api, employee):
         api.post(
-            "/api/auth/login/",
+            "/api/v1/auth/login/",
             {"email": employee.email, "password": PASSWORD},
             format="json",
         )
@@ -88,7 +88,7 @@ class TestLogin:
 
     def test_failed_login_is_logged(self, api, employee):
         api.post(
-            "/api/auth/login/",
+            "/api/v1/auth/login/",
             {"email": employee.email, "password": "wrong"},
             format="json",
         )
@@ -98,35 +98,35 @@ class TestLogin:
 class TestRefresh:
     def test_refresh_returns_new_access(self, api, employee):
         login = api.post(
-            "/api/auth/login/",
+            "/api/v1/auth/login/",
             {"email": employee.email, "password": PASSWORD},
             format="json",
         )
         refresh = login.json()["data"]["refresh"]
 
-        response = api.post("/api/auth/refresh/", {"refresh": refresh}, format="json")
+        response = api.post("/api/v1/auth/refresh/", {"refresh": refresh}, format="json")
         assert response.status_code == 200
         assert "access" in response.json()["data"]
 
     def test_old_refresh_blacklisted_after_rotation(self, api, employee):
         login = api.post(
-            "/api/auth/login/",
+            "/api/v1/auth/login/",
             {"email": employee.email, "password": PASSWORD},
             format="json",
         )
         old_refresh = login.json()["data"]["refresh"]
 
-        first = api.post("/api/auth/refresh/", {"refresh": old_refresh}, format="json")
+        first = api.post("/api/v1/auth/refresh/", {"refresh": old_refresh}, format="json")
         assert first.status_code == 200
 
-        second = api.post("/api/auth/refresh/", {"refresh": old_refresh}, format="json")
+        second = api.post("/api/v1/auth/refresh/", {"refresh": old_refresh}, format="json")
         assert second.status_code == 401
 
 
 class TestLogout:
     def test_logout_blacklists_refresh(self, api, employee, auth_client):
         login = api.post(
-            "/api/auth/login/",
+            "/api/v1/auth/login/",
             {"email": employee.email, "password": PASSWORD},
             format="json",
         )
@@ -134,24 +134,24 @@ class TestLogout:
         refresh = login.json()["data"]["refresh"]
 
         api.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
-        response = api.post("/api/auth/logout/", {"refresh": refresh}, format="json")
+        response = api.post("/api/v1/auth/logout/", {"refresh": refresh}, format="json")
         assert response.status_code == 204
 
         api.credentials()
-        retry = api.post("/api/auth/refresh/", {"refresh": refresh}, format="json")
+        retry = api.post("/api/v1/auth/refresh/", {"refresh": refresh}, format="json")
         assert retry.status_code == 401
 
     def test_logout_requires_auth(self, api):
-        response = api.post("/api/auth/logout/", {"refresh": "x"}, format="json")
+        response = api.post("/api/v1/auth/logout/", {"refresh": "x"}, format="json")
         assert response.status_code == 401
 
 
 class TestMe:
     def test_requires_auth(self, api):
-        assert api.get("/api/auth/me/").status_code == 401
+        assert api.get("/api/v1/auth/me/").status_code == 401
 
     def test_returns_profile_with_permissions(self, employee_client, employee):
-        response = employee_client.get("/api/auth/me/")
+        response = employee_client.get("/api/v1/auth/me/")
         assert response.status_code == 200
         data = response.json()["data"]
         assert data["email"] == employee.email
@@ -161,20 +161,20 @@ class TestMe:
         assert data["available_actions"]["can_manage_users"] is False
 
     def test_admin_has_all_permissions(self, admin_client):
-        response = admin_client.get("/api/auth/me/")
+        response = admin_client.get("/api/v1/auth/me/")
         permissions = response.json()["data"]["permissions"]
         assert "users.manage" in permissions
         assert "audit.view" in permissions
         assert "settings.manage" in permissions
 
     def test_patch_updates_own_profile(self, employee_client):
-        response = employee_client.patch("/api/auth/me/", {"first_name": "Новое"}, format="json")
+        response = employee_client.patch("/api/v1/auth/me/", {"first_name": "Новое"}, format="json")
         assert response.status_code == 200
         assert response.json()["data"]["first_name"] == "Новое"
 
     def test_patch_cannot_change_role(self, employee_client, roles):
         response = employee_client.patch(
-            "/api/auth/me/", {"role": str(roles["admin"].id)}, format="json"
+            "/api/v1/auth/me/", {"role": str(roles["admin"].id)}, format="json"
         )
         assert response.status_code == 200
         assert response.json()["data"]["role"]["code"] == "employee"
@@ -183,7 +183,7 @@ class TestMe:
 class TestChangePassword:
     def test_success(self, employee_client, employee):
         response = employee_client.post(
-            "/api/auth/change-password/",
+            "/api/v1/auth/change-password/",
             {
                 "old_password": PASSWORD,
                 "new_password": "BrandNewPass456!",
@@ -197,7 +197,7 @@ class TestChangePassword:
 
     def test_wrong_old_password(self, employee_client):
         response = employee_client.post(
-            "/api/auth/change-password/",
+            "/api/v1/auth/change-password/",
             {
                 "old_password": "wrong",
                 "new_password": "BrandNewPass456!",
@@ -210,7 +210,7 @@ class TestChangePassword:
 
     def test_passwords_do_not_match(self, employee_client):
         response = employee_client.post(
-            "/api/auth/change-password/",
+            "/api/v1/auth/change-password/",
             {
                 "old_password": PASSWORD,
                 "new_password": "BrandNewPass456!",
@@ -222,7 +222,7 @@ class TestChangePassword:
 
     def test_weak_password_rejected(self, employee_client):
         response = employee_client.post(
-            "/api/auth/change-password/",
+            "/api/v1/auth/change-password/",
             {
                 "old_password": PASSWORD,
                 "new_password": "12345678",
@@ -235,8 +235,12 @@ class TestChangePassword:
 
 class TestPasswordReset:
     def test_forgot_password_always_same_response(self, api, employee):
-        existing = api.post("/api/auth/forgot-password/", {"email": employee.email}, format="json")
-        missing = api.post("/api/auth/forgot-password/", {"email": "nobody@esu.kg"}, format="json")
+        existing = api.post(
+            "/api/v1/auth/forgot-password/", {"email": employee.email}, format="json"
+        )
+        missing = api.post(
+            "/api/v1/auth/forgot-password/", {"email": "nobody@esu.kg"}, format="json"
+        )
         assert existing.status_code == missing.status_code == 200
         assert existing.json()["data"] == missing.json()["data"]
 
@@ -249,7 +253,7 @@ class TestPasswordReset:
         token = default_token_generator.make_token(employee)
 
         response = api.post(
-            "/api/auth/reset-password/",
+            "/api/v1/auth/reset-password/",
             {
                 "uid": uid,
                 "token": token,
@@ -276,8 +280,8 @@ class TestPasswordReset:
             "new_password_confirm": "ResetPass789!",
         }
 
-        assert api.post("/api/auth/reset-password/", payload, format="json").status_code == 200
-        assert api.post("/api/auth/reset-password/", payload, format="json").status_code == 400
+        assert api.post("/api/v1/auth/reset-password/", payload, format="json").status_code == 200
+        assert api.post("/api/v1/auth/reset-password/", payload, format="json").status_code == 400
 
     def test_invalid_token(self, api, employee):
         from django.utils.encoding import force_bytes
@@ -285,7 +289,7 @@ class TestPasswordReset:
 
         uid = urlsafe_base64_encode(force_bytes(employee.pk))
         response = api.post(
-            "/api/auth/reset-password/",
+            "/api/v1/auth/reset-password/",
             {
                 "uid": uid,
                 "token": "неверный-токен",
@@ -295,3 +299,42 @@ class TestPasswordReset:
             format="json",
         )
         assert response.status_code == 400
+
+
+class TestSessionRevocation:
+    def test_password_change_invalidates_old_refresh(self, api, employee, auth_client):
+        login = api.post(
+            "/api/v1/auth/login/",
+            {"email": employee.email, "password": PASSWORD},
+            format="json",
+        )
+        old_refresh = login.json()["data"]["refresh"]
+
+        client = auth_client(employee)
+        changed = client.post(
+            "/api/v1/auth/change-password/",
+            {
+                "old_password": PASSWORD,
+                "new_password": "BrandNewPass456!",
+                "new_password_confirm": "BrandNewPass456!",
+            },
+            format="json",
+        )
+        assert changed.status_code == 200
+
+        retry = api.post("/api/v1/auth/refresh/", {"refresh": old_refresh}, format="json")
+        assert retry.status_code == 401
+
+    def test_block_invalidates_refresh(self, api, admin_client, employee):
+        login = api.post(
+            "/api/v1/auth/login/",
+            {"email": employee.email, "password": PASSWORD},
+            format="json",
+        )
+        refresh = login.json()["data"]["refresh"]
+
+        blocked = admin_client.post(f"/api/v1/users/{employee.id}/block/")
+        assert blocked.status_code == 200
+
+        retry = api.post("/api/v1/auth/refresh/", {"refresh": refresh}, format="json")
+        assert retry.status_code == 401

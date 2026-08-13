@@ -16,13 +16,13 @@ def test_seed_created_roles_and_permissions(db):
 
 
 def test_system_roles_cannot_be_deleted(admin_client, roles):
-    response = admin_client.delete(f"/api/roles/{roles['employee'].id}/")
+    response = admin_client.delete(f"/api/v1/roles/{roles['employee'].id}/")
     assert response.status_code == 400
 
 
 def test_create_custom_role(admin_client):
     response = admin_client.post(
-        "/api/roles/",
+        "/api/v1/roles/",
         {
             "code": "archivist",
             "name": "Архивариус",
@@ -38,7 +38,7 @@ def test_create_custom_role(admin_client):
 def test_set_permissions_replaces_set(admin_client, roles):
     role = roles["employee"]
     response = admin_client.put(
-        f"/api/roles/{role.id}/permissions/",
+        f"/api/v1/roles/{role.id}/permissions/",
         {"permissions": ["documents.view"]},
         format="json",
     )
@@ -49,14 +49,38 @@ def test_set_permissions_replaces_set(admin_client, roles):
 
 def test_unknown_permission_rejected(admin_client, roles):
     response = admin_client.put(
-        f"/api/roles/{roles['employee'].id}/permissions/",
+        f"/api/v1/roles/{roles['employee'].id}/permissions/",
         {"permissions": ["documents.view", "не.существует"]},
         format="json",
     )
     assert response.status_code == 400
 
 
+def test_cannot_strip_critical_permission_from_last_admin(admin_client, roles):
+    """Privilege escalation: у последнего активного администратора нельзя снять users.manage."""
+    admin_role = roles["admin"]
+    response = admin_client.put(
+        f"/api/v1/roles/{admin_role.id}/permissions/",
+        {"permissions": ["documents.view"]},
+        format="json",
+    )
+    assert response.status_code == 400
+    admin_role.refresh_from_db()
+    assert "users.manage" in admin_role.permission_codes
+
+
+def test_can_strip_critical_permission_when_another_admin_exists(admin_client, roles, superuser):
+    """Если есть другой активный администратор (суперпользователь), снятие разрешено."""
+    admin_role = roles["admin"]
+    response = admin_client.put(
+        f"/api/v1/roles/{admin_role.id}/permissions/",
+        {"permissions": ["documents.view"]},
+        format="json",
+    )
+    assert response.status_code == 200
+
+
 def test_permissions_list(admin_client):
-    response = admin_client.get("/api/permissions/")
+    response = admin_client.get("/api/v1/permissions/")
     assert response.status_code == 200
     assert len(response.json()["data"]) == 12
