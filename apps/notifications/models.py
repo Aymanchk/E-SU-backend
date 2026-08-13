@@ -22,9 +22,7 @@ class Notification(UUIDModel):
         related_name="notifications",
         verbose_name="Получатель",
     )
-    type = models.CharField(
-        "Тип", max_length=40, choices=NotificationType.choices, db_index=True
-    )
+    type = models.CharField("Тип", max_length=40, choices=NotificationType.choices, db_index=True)
     title = models.CharField("Заголовок", max_length=255)
     message = models.TextField("Сообщение")
     document = models.ForeignKey(

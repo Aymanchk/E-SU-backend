@@ -67,9 +67,7 @@ class DocumentService:
             return queryset
 
         role_code = user.role.code if user.role_id else None
-        own_or_responsible = (
-            Q(author=user) | Q(responsible=user) | Q(approval_steps__approver=user)
-        )
+        own_or_responsible = Q(author=user) | Q(responsible=user) | Q(approval_steps__approver=user)
         if role_code == "manager":
             return queryset.filter(own_or_responsible | Q(department=user.department)).distinct()
         if role_code == "office":
@@ -205,9 +203,7 @@ class RegistrationService:
             raise PermissionDenied("Недостаточно прав для регистрации документа")
 
         document = (
-            Document.objects.select_for_update()
-            .select_related("category")
-            .get(pk=document.pk)
+            Document.objects.select_for_update().select_related("category").get(pk=document.pk)
         )
         if document.registration_number:
             raise ValidationError("Документ уже зарегистрирован")
@@ -220,9 +216,7 @@ class RegistrationService:
         counter.save(update_fields=["last_number", "updated_at"])
 
         category_code = document.category.code.upper()
-        document.registration_number = (
-            f"ESU-{category_code}-{year}-{counter.last_number:06d}"
-        )
+        document.registration_number = f"ESU-{category_code}-{year}-{counter.last_number:06d}"
         document.save(update_fields=["registration_number", "updated_at"])
         HistoryService.record(
             document,
@@ -239,9 +233,7 @@ class FileService:
     ALLOWED_MIME_TYPES = {
         ".pdf": {"application/pdf"},
         ".doc": {"application/msword"},
-        ".docx": {
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        },
+        ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
         ".xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
         ".png": {"image/png"},
         ".jpg": {"image/jpeg"},
@@ -367,9 +359,9 @@ class ApprovalService:
         DocumentService.ensure_can_edit(document, user)
         previous_status = document.status
 
-        ApprovalRoute.objects.filter(
-            document=document, status=ApprovalRouteStatus.ACTIVE
-        ).update(status=ApprovalRouteStatus.CANCELLED, completed_at=timezone.now())
+        ApprovalRoute.objects.filter(document=document, status=ApprovalRouteStatus.ACTIVE).update(
+            status=ApprovalRouteStatus.CANCELLED, completed_at=timezone.now()
+        )
         ApprovalStep.objects.filter(
             document=document,
             route__status=ApprovalRouteStatus.CANCELLED,
@@ -386,9 +378,7 @@ class ApprovalService:
                     approver=approver,
                     role_id=approver.role_id,
                     status=(
-                        ApprovalStepStatus.CURRENT
-                        if order == 1
-                        else ApprovalStepStatus.PENDING
+                        ApprovalStepStatus.CURRENT if order == 1 else ApprovalStepStatus.PENDING
                     ),
                 )
                 for order, approver in enumerate(approvers, start=1)
@@ -678,10 +668,7 @@ class HistoryService:
 
     @classmethod
     def snapshot(cls, document: Document) -> dict:
-        return {
-            field: cls._normalize(getattr(document, field))
-            for field in cls.TRACKED_FIELDS
-        }
+        return {field: cls._normalize(getattr(document, field)) for field in cls.TRACKED_FIELDS}
 
     @classmethod
     def normalize_mapping(cls, values: dict | None) -> dict:
@@ -721,9 +708,7 @@ class DashboardService:
             else:
                 queryset = DocumentService.visible_to(user, queryset)
 
-        return queryset.select_related(
-            "category", "author", "department", "responsible"
-        )
+        return queryset.select_related("category", "author", "department", "responsible")
 
     @classmethod
     def build(cls, user) -> dict:
@@ -750,9 +735,7 @@ class DashboardService:
             )
             .exclude(status__in=[DocumentStatus.COMPLETED, DocumentStatus.ARCHIVED])
             .order_by("deadline")[: cls.LIST_LIMIT],
-            "recent_actions": DocumentHistory.objects.filter(
-                document_id__in=visible_ids
-            )
+            "recent_actions": DocumentHistory.objects.filter(document_id__in=visible_ids)
             .select_related("document", "user")
             .order_by("-created_at")[: cls.ACTIONS_LIMIT],
         }

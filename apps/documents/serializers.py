@@ -127,8 +127,7 @@ class DocumentWriteSerializer(serializers.ModelSerializer):
             category
             and category.allowed_departments.exists()
             and (
-                not department
-                or not category.allowed_departments.filter(pk=department.pk).exists()
+                not department or not category.allowed_departments.filter(pk=department.pk).exists()
             )
         ):
             raise serializers.ValidationError(

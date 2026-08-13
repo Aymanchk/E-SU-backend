@@ -171,9 +171,7 @@ class DocumentFile(UUIDModel):
         related_name="files",
         verbose_name="Документ",
     )
-    file = models.FileField(
-        "Файл", upload_to=document_file_upload_path, max_length=500
-    )
+    file = models.FileField("Файл", upload_to=document_file_upload_path, max_length=500)
     original_name = models.CharField("Исходное имя", max_length=255)
     file_type = models.CharField("Тип файла", max_length=20)
     mime_type = models.CharField("MIME-тип", max_length=150)
@@ -301,9 +299,7 @@ class ApprovalStep(UUIDModel):
         verbose_name = "Шаг согласования"
         verbose_name_plural = "Шаги согласования"
         constraints = [
-            models.UniqueConstraint(
-                fields=["route", "order"], name="unique_approval_step_order"
-            )
+            models.UniqueConstraint(fields=["route", "order"], name="unique_approval_step_order")
         ]
         indexes = [
             models.Index(fields=["document", "status"]),
