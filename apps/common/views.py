@@ -15,6 +15,7 @@ from apps.audit.services import log_action
 
 from .models import SystemSetting
 from .serializers import SystemSettingSerializer, SystemSettingsUpdateSerializer
+from .settings_service import get_all_settings_data, invalidate_settings_cache
 
 
 class HealthView(APIView):
@@ -80,13 +81,13 @@ class SystemSettingsView(APIView):
         responses={200: SystemSettingSerializer(many=True)},
     )
     def get(self, request):
-        queryset = SystemSetting.objects.all()
+        # Настройки кешируются; приватные скрываем от пользователей без прав.
+        data = get_all_settings_data()
 
         if not request.user.has_permission("settings.manage"):
-            queryset = queryset.filter(is_public=True)
+            data = [item for item in data if item["is_public"]]
 
-        serializer = SystemSettingSerializer(queryset, many=True)
-        return Response(serializer.data)
+        return Response(data)
 
     @extend_schema(
         summary="Изменение системных настроек",
@@ -122,6 +123,7 @@ class SystemSettingsView(APIView):
                 description=f"Изменены настройки: {', '.join(changes.keys())}",
                 metadata={"changes": changes},
             )
+            # Инвалидируем кеш, чтобы GET сразу отдал новые значения.
+            invalidate_settings_cache()
 
-        queryset = SystemSetting.objects.all()
-        return Response(SystemSettingSerializer(queryset, many=True).data)
+        return Response(get_all_settings_data())
