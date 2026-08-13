@@ -1,12 +1,21 @@
 """Общие фикстуры для всех тестов."""
 
 import pytest
+from django.core.cache import cache
 from rest_framework.test import APIClient
 
 from apps.accounts.models import Role, User, UserStatus
 from apps.organizations.models import Department
 
 PASSWORD = "TestPass123!"
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    """Кеш (например, системных настроек) не откатывается вместе с БД."""
+    cache.clear()
+    yield
+    cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -25,7 +34,7 @@ def auth_client(api):
 
     def _login(user, password=PASSWORD):
         response = api.post(
-            "/api/auth/login/",
+            "/api/v1/auth/login/",
             {"email": user.email, "password": password},
             format="json",
         )

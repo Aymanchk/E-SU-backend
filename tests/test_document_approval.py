@@ -34,14 +34,12 @@ def approval_document(employee, admin, child_department):
 
 @pytest.fixture
 def second_manager(user_factory, child_department):
-    return user_factory(
-        email="manager2@esu.kg", role_code="manager", department=child_department
-    )
+    return user_factory(email="manager2@esu.kg", role_code="manager", department=child_department)
 
 
 def submit(client, document, *approvers):
     return client.post(
-        f"/api/documents/{document.id}/submit/",
+        f"/api/v1/documents/{document.id}/submit/",
         {"approvers": [str(approver.id) for approver in approvers]},
         format="json",
     )
@@ -102,7 +100,7 @@ class TestSequentialApproval:
         submit(employee_client, approval_document, manager, second_manager)
 
         first = manager_client.post(
-            f"/api/documents/{approval_document.id}/approve/",
+            f"/api/v1/documents/{approval_document.id}/approve/",
             {"comment": "Первый согласовал"},
             format="json",
         )
@@ -112,7 +110,7 @@ class TestSequentialApproval:
         assert approval_document.current_approval_step == 2
 
         second = auth_client(second_manager).post(
-            f"/api/documents/{approval_document.id}/approve/",
+            f"/api/v1/documents/{approval_document.id}/approve/",
             {"comment": "Второй согласовал"},
             format="json",
         )
@@ -133,7 +131,7 @@ class TestSequentialApproval:
     ):
         submit(employee_client, approval_document, manager, second_manager)
         response = auth_client(second_manager).post(
-            f"/api/documents/{approval_document.id}/approve/", {}, format="json"
+            f"/api/v1/documents/{approval_document.id}/approve/", {}, format="json"
         )
         assert response.status_code == 403
 
@@ -147,12 +145,12 @@ class TestSequentialApproval:
         second_manager,
     ):
         submit(employee_client, approval_document, manager, second_manager)
-        first_count = manager_client.get("/api/documents/for-approval/").json()["data"][
-            "count"
-        ]
-        second_count = auth_client(second_manager).get(
-            "/api/documents/for-approval/"
-        ).json()["data"]["count"]
+        first_count = manager_client.get("/api/v1/documents/for-approval/").json()["data"]["count"]
+        second_count = (
+            auth_client(second_manager)
+            .get("/api/v1/documents/for-approval/")
+            .json()["data"]["count"]
+        )
         assert first_count == 1
         assert second_count == 0
 
@@ -163,7 +161,7 @@ class TestApprovalReturn:
     ):
         submit(employee_client, approval_document, manager)
         response = manager_client.post(
-            f"/api/documents/{approval_document.id}/return/", {}, format="json"
+            f"/api/v1/documents/{approval_document.id}/return/", {}, format="json"
         )
         assert response.status_code == 400
 
@@ -172,7 +170,7 @@ class TestApprovalReturn:
     ):
         submit(employee_client, approval_document, manager, second_manager)
         response = manager_client.post(
-            f"/api/documents/{approval_document.id}/return/",
+            f"/api/v1/documents/{approval_document.id}/return/",
             {"comment": "Исправьте реквизиты"},
             format="json",
         )
@@ -191,7 +189,7 @@ class TestApprovalReturn:
     ):
         submit(employee_client, approval_document, manager)
         manager_client.post(
-            f"/api/documents/{approval_document.id}/return/",
+            f"/api/v1/documents/{approval_document.id}/return/",
             {"comment": "На доработку"},
             format="json",
         )
@@ -207,10 +205,8 @@ class TestApprovalReturn:
         self, employee_client, manager_client, approval_document, manager
     ):
         submit(employee_client, approval_document, manager)
-        manager_client.post(
-            f"/api/documents/{approval_document.id}/approve/", {}, format="json"
-        )
-        response = employee_client.get(f"/api/documents/{approval_document.id}/approval/")
+        manager_client.post(f"/api/v1/documents/{approval_document.id}/approve/", {}, format="json")
+        response = employee_client.get(f"/api/v1/documents/{approval_document.id}/approval/")
         assert response.status_code == 200
         assert len(response.json()["data"]["steps"]) == 1
         assert len(response.json()["data"]["actions"]) == 1

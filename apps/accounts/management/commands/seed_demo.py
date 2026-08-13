@@ -21,6 +21,9 @@ class Command(BaseCommand):
         buh, _ = Department.objects.get_or_create(
             code="accounting", defaults={"name": "Бухгалтерия", "parent": rector}
         )
+        hr, _ = Department.objects.get_or_create(
+            code="hr", defaults={"name": "Отдел кадров", "parent": rector}
+        )
 
         roles = {r.code: r for r in Role.objects.all()}
 
@@ -30,6 +33,7 @@ class Command(BaseCommand):
             ("office@esu.kg", "Канцелярова", "Анна", "office", rector),
             ("employee@esu.kg", "Сотрудников", "Иван", "employee", it),
             ("buh@esu.kg", "Бухгалтерова", "Мария", "employee", buh),
+            ("hr@esu.kg", "Кадрова", "Елена", "employee", hr),
         ]
 
         for email, last_name, first_name, role_code, department in demo_users:

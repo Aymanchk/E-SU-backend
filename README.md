@@ -95,12 +95,25 @@ ruff format --check .                 # проверка форматирова�
 значение на нём даже внутри кавычек (проверено на практике). Безопасный способ
 сгенерировать ключ: `python -c "import secrets; print(secrets.token_urlsafe(50))"`.
 
+## Версионирование API
+
+Основные эндпоинты подключены под префиксом `/api/v1/` (версия задаётся переменной
+`API_VERSION`, по умолчанию `v1`). Старый префикс `/api/` временно сохранён ради
+обратной совместимости; новый фронтенд должен использовать только `/api/v1/`.
+Swagger отображает только версионированные эндпоинты.
+
 ## Документация API
 
 - Swagger UI: http://localhost:8000/api/docs/
 - ReDoc: http://localhost:8000/api/redoc/
 - OpenAPI схема: http://localhost:8000/api/schema/
 - Health-check: http://localhost:8000/api/health/
+
+Контракт для frontend и справочники:
+
+- [docs/FRONTEND_API_CONTRACT.md](docs/FRONTEND_API_CONTRACT.md) — таблица эндпоинтов
+- [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md) — авторизация и токены
+- [docs/PERMISSIONS.md](docs/PERMISSIONS.md) — роли и права
 
 ## Формат ответов
 
@@ -169,6 +182,20 @@ backend/
 | settings.manage | Управление настройками |
 
 Роли и права создаются data-миграцией автоматически.
+
+## Демо-данные
+
+Команда `python manage.py seed_demo` идемпотентно создаёт демо-подразделения
+(Ректорат, IT отдел, Бухгалтерия, Отдел кадров) и тестовых пользователей.
+
+> **Только для development.** Не использовать в production.
+
+| Email | Роль | Пароль |
+|---|---|---|
+| admin@esu.kg | admin | `DemoPass123!` |
+| manager@esu.kg | manager | `DemoPass123!` |
+| office@esu.kg | office | `DemoPass123!` |
+| employee@esu.kg | employee | `DemoPass123!` |
 
 ## Работа с Git
 

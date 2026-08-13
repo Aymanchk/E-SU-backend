@@ -1,4 +1,17 @@
-"""Постобработка OpenAPI схемы под наш формат ответов."""
+"""Обработка OpenAPI схемы под наш формат ответов и версионирование."""
+
+
+def exclude_legacy_paths(endpoints, **kwargs):
+    """
+    Preprocessing-хук drf-spectacular.
+
+    Оставляет в схеме только версионированные пути ``/api/v1/…``. Legacy-префикс
+    ``/api/…`` подключён ради обратной совместимости, но в Swagger он не нужен и
+    создавал бы дубликаты operationId.
+
+    ``endpoints`` — список кортежей ``(path, path_regex, method, callback)``.
+    """
+    return [e for e in endpoints if e[0].startswith("/api/v1/")]
 
 
 def envelope_postprocessing_hook(result, generator, request, public):

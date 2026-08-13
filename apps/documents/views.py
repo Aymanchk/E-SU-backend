@@ -88,9 +88,11 @@ class DocumentCategoryViewSet(viewsets.ModelViewSet):
     http_method_names = ["get", "post", "patch", "delete", "head", "options"]
 
     def get_queryset(self):
-        return DocumentCategory.objects.select_related("created_by").prefetch_related(
-            "allowed_departments"
-        ).distinct()
+        return (
+            DocumentCategory.objects.select_related("created_by")
+            .prefetch_related("allowed_departments")
+            .distinct()
+        )
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
@@ -211,12 +213,16 @@ class DocumentViewSet(viewsets.ModelViewSet):
         instance.delete()
 
     def _service_response(self, document):
-        return Response(DocumentDetailSerializer(document, context=self.get_serializer_context()).data)
+        return Response(
+            DocumentDetailSerializer(document, context=self.get_serializer_context()).data
+        )
 
     @extend_schema(summary="Мои документы", tags=["Documents"])
     @action(detail=False, methods=["get"])
     def my(self, request):
-        return self._paginated(self.filter_queryset(self.get_queryset().filter(author=request.user)))
+        return self._paginated(
+            self.filter_queryset(self.get_queryset().filter(author=request.user))
+        )
 
     @extend_schema(summary="Документы на согласование", tags=["Documents"])
     @action(detail=False, methods=["get"], url_path="for-approval")
@@ -224,9 +230,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
         current_steps = ApprovalStep.objects.filter(status=ApprovalStepStatus.CURRENT)
         if not request.user.is_admin_role:
             current_steps = current_steps.filter(approver=request.user)
-        queryset = self.get_queryset().filter(
-            pk__in=current_steps.values("document_id")
-        )
+        queryset = self.get_queryset().filter(pk__in=current_steps.values("document_id"))
         return self._paginated(self.filter_queryset(queryset.distinct()))
 
     @extend_schema(summary="Возвращённые документы", tags=["Documents"])
@@ -401,9 +405,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
 
         queryset = document.comments.select_related("author")
         page = self.paginate_queryset(queryset)
-        serializer = DocumentCommentSerializer(
-            page if page is not None else queryset, many=True
-        )
+        serializer = DocumentCommentSerializer(page if page is not None else queryset, many=True)
         if page is not None:
             return self.get_paginated_response(serializer.data)
         return Response(serializer.data)
@@ -418,9 +420,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
         document = self.get_object()
         queryset = document.history.select_related("user")
         page = self.paginate_queryset(queryset)
-        serializer = DocumentHistorySerializer(
-            page if page is not None else queryset, many=True
-        )
+        serializer = DocumentHistorySerializer(page if page is not None else queryset, many=True)
         if page is not None:
             return self.get_paginated_response(serializer.data)
         return Response(serializer.data)
@@ -481,9 +481,7 @@ class DocumentCommentViewSet(viewsets.GenericViewSet):
         comment = self.get_object()
         serializer = DocumentCommentCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        comment = CommentService.update(
-            comment, request.user, serializer.validated_data["text"]
-        )
+        comment = CommentService.update(comment, request.user, serializer.validated_data["text"])
         return Response(DocumentCommentSerializer(comment).data)
 
     def destroy(self, request, *args, **kwargs):

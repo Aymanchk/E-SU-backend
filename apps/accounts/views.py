@@ -27,7 +27,12 @@ from .serializers import (
     UserPublicSerializer,
     UserUpdateSerializer,
 )
+from .services import blacklist_user_refresh_tokens
 from .tasks import send_account_blocked_email, send_account_created_email
+
+# Права, потеря которых у последнего активного администратора приводит к блокировке
+# управления системой. Их нельзя снять, если больше никто их не сохранит.
+CRITICAL_PERMISSIONS = {"users.manage", "settings.manage"}
 
 
 @extend_schema_view(
@@ -112,8 +117,29 @@ class RoleViewSet(viewsets.ModelViewSet):
 
         codes = serializer.validated_data["permissions"]
         old_codes = set(role.permission_codes)
-        role.permissions.set(Permission.objects.filter(code__in=codes))
         new_codes = set(codes)
+
+        # Защита от privilege escalation: нельзя снять критические права, если после
+        # изменения не останется ни одного активного администратора с этим правом.
+        removed_critical = (old_codes - new_codes) & CRITICAL_PERMISSIONS
+        for permission_code in removed_critical:
+            keeps_permission = (
+                User.objects.filter(is_active=True, status=UserStatus.ACTIVE)
+                .filter(Q(is_superuser=True) | Q(role__permissions__code=permission_code))
+                .exclude(role=role)
+                .exists()
+            )
+            if not keeps_permission:
+                raise serializers.ValidationError(
+                    {
+                        "permissions": (
+                            f"Нельзя снять право «{permission_code}» у последнего "
+                            f"администратора"
+                        )
+                    }
+                )
+
+        role.permissions.set(Permission.objects.filter(code__in=codes))
 
         log_action(
             request,
@@ -325,6 +351,8 @@ class UserViewSet(viewsets.ModelViewSet):
             raise serializers.ValidationError("Нельзя заблокировать суперпользователя")
 
         user.block()
+        # Заблокированный пользователь не должен продлевать сессию (ТЗ §7).
+        blacklist_user_refresh_tokens(user)
         send_account_blocked_email.delay(user.email, user.full_name)
 
         log_action(

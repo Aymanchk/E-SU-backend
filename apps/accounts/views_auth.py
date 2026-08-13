@@ -29,6 +29,7 @@ from .serializers import (
     MeSerializer,
     ResetPasswordSerializer,
 )
+from .services import blacklist_user_refresh_tokens
 from .tasks import send_password_changed_email, send_password_reset_email
 
 logger = logging.getLogger(__name__)
@@ -194,6 +195,9 @@ class ChangePasswordView(APIView):
         user.set_password(serializer.validated_data["new_password"])
         user.save(update_fields=["password"])
 
+        # После смены пароля все старые refresh-токены недействительны (ТЗ §5).
+        blacklist_user_refresh_tokens(user)
+
         send_password_changed_email.delay(user.email, user.full_name)
 
         log_action(
@@ -280,6 +284,9 @@ class ResetPasswordView(APIView):
         if user.status == UserStatus.INVITED:
             user.status = UserStatus.ACTIVE
         user.save(update_fields=["password", "status"])
+
+        # После сброса пароля все старые refresh-токены недействительны (ТЗ §5).
+        blacklist_user_refresh_tokens(user)
 
         log_action(
             request,
