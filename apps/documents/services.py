@@ -10,6 +10,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from apps.notifications.models import NotificationType
 from apps.notifications.services import NotificationService
 
+from .access import DocumentAccessService
 from .models import (
     ApprovalAction,
     ApprovalActionType,
@@ -58,45 +59,24 @@ class DocumentCategoryService:
 
 
 class DocumentService:
-    EDITABLE_STATUSES = {DocumentStatus.DRAFT, DocumentStatus.RETURNED}
+    EDITABLE_STATUSES = DocumentAccessService.EDITABLE_STATUSES
 
     @staticmethod
     def visible_to(user, queryset: QuerySet | None = None) -> QuerySet:
-        queryset = queryset if queryset is not None else Document.objects.all()
-        if user.is_superuser or user.is_admin_role:
-            return queryset
-
-        role_code = user.role.code if user.role_id else None
-        own_or_responsible = Q(author=user) | Q(responsible=user) | Q(approval_steps__approver=user)
-        if role_code == "manager":
-            return queryset.filter(own_or_responsible | Q(department=user.department)).distinct()
-        if role_code == "office":
-            return queryset.filter(
-                own_or_responsible
-                | Q(
-                    status__in=[
-                        DocumentStatus.IN_REVIEW,
-                        DocumentStatus.APPROVED,
-                        DocumentStatus.COMPLETED,
-                        DocumentStatus.OVERDUE,
-                        DocumentStatus.ARCHIVED,
-                    ]
-                )
-            ).distinct()
-        return queryset.filter(own_or_responsible).distinct()
+        return DocumentAccessService.visible_to(user, queryset)
 
     @classmethod
     def ensure_can_edit(cls, document: Document, user) -> None:
         if document.status not in cls.EDITABLE_STATUSES:
             raise ValidationError("Документ в этом статусе нельзя редактировать")
-        if not (user.is_admin_role or document.author_id == user.id):
+        if not DocumentAccessService.can_edit(user, document):
             raise PermissionDenied("Редактировать документ может только автор или администратор")
 
     @classmethod
     def ensure_can_delete(cls, document: Document, user) -> None:
         if document.status != DocumentStatus.DRAFT:
             raise ValidationError("После отправки документ нельзя удалить")
-        if not (user.is_admin_role or document.author_id == user.id):
+        if not DocumentAccessService.can_delete(user, document):
             raise PermissionDenied("Удалить документ может только автор или администратор")
 
     @staticmethod
@@ -104,11 +84,7 @@ class DocumentService:
     def complete(document: Document, user) -> Document:
         if document.status != DocumentStatus.APPROVED:
             raise ValidationError("Завершить можно только согласованный документ")
-        if not (
-            user.is_admin_role
-            or document.responsible_id == user.id
-            or user.has_permission("documents.edit")
-        ):
+        if not DocumentAccessService.can_complete(user, document):
             raise PermissionDenied("Недостаточно прав для завершения документа")
         document.status = DocumentStatus.COMPLETED
         document.completed_at = timezone.now()
@@ -126,9 +102,9 @@ class DocumentService:
     @staticmethod
     @transaction.atomic
     def archive(document: Document, user) -> Document:
-        if document.status not in {DocumentStatus.APPROVED, DocumentStatus.COMPLETED}:
-            raise ValidationError("Архивировать можно согласованный или завершённый документ")
-        if not (user.is_admin_role or user.has_permission("documents.archive")):
+        if document.status != DocumentStatus.COMPLETED:
+            raise ValidationError("Архивировать можно только завершённый документ")
+        if not DocumentAccessService.can_archive(user, document):
             raise PermissionDenied("Недостаточно прав для архивирования документа")
         previous_status = document.status
         document.status = DocumentStatus.ARCHIVED
@@ -157,7 +133,7 @@ class DocumentService:
     def restore(document: Document, user) -> Document:
         if document.status != DocumentStatus.ARCHIVED:
             raise ValidationError("Документ не находится в архиве")
-        if not (user.is_admin_role or user.has_permission("documents.archive")):
+        if not DocumentAccessService.can_restore(user, document):
             raise PermissionDenied("Недостаточно прав для восстановления документа")
         restored_status = (
             DocumentStatus.COMPLETED if document.completed_at else DocumentStatus.APPROVED
@@ -199,7 +175,7 @@ class RegistrationService:
     @classmethod
     @transaction.atomic
     def register(cls, document: Document, user) -> Document:
-        if not (user.is_admin_role or user.has_permission("documents.register")):
+        if not DocumentAccessService.can_register(user, document):
             raise PermissionDenied("Недостаточно прав для регистрации документа")
 
         document = (
@@ -290,7 +266,8 @@ class FileService:
     @classmethod
     @transaction.atomic
     def upload(cls, document: Document, uploaded_file, user, is_main=False) -> DocumentFile:
-        DocumentService.ensure_can_edit(document, user)
+        if not DocumentAccessService.can_upload_file(user, document):
+            DocumentService.ensure_can_edit(document, user)
         file_type, mime_type = cls.validate_upload(uploaded_file)
 
         existing_files = document.files.exists()
@@ -324,7 +301,8 @@ class FileService:
     @staticmethod
     @transaction.atomic
     def delete(document_file: DocumentFile, user) -> None:
-        DocumentService.ensure_can_edit(document_file.document, user)
+        if not DocumentAccessService.can_delete_file(user, document_file.document):
+            DocumentService.ensure_can_edit(document_file.document, user)
         HistoryService.record(
             document_file.document,
             user,
@@ -349,7 +327,7 @@ class ApprovalService:
 
     @staticmethod
     def _ensure_current_approver(step: ApprovalStep, user) -> None:
-        if not (user.is_admin_role or step.approver_id == user.id):
+        if not DocumentAccessService.can_approve(user, step.document):
             raise PermissionDenied("Действие доступно только текущему согласующему")
 
     @classmethod

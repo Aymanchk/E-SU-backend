@@ -10,6 +10,7 @@ from apps.common.permissions import HasPermissionPerAction
 from apps.notifications.models import NotificationType
 from apps.notifications.services import NotificationService
 
+from .access import DocumentAccessService
 from .filters import DocumentCategoryFilter, DocumentFilter
 from .models import (
     ApprovalStep,
@@ -130,6 +131,9 @@ class DocumentViewSet(viewsets.ModelViewSet):
         "create": "documents.create",
         "list": "documents.view",
         "retrieve": "documents.view",
+        "update": "documents.create",
+        "partial_update": "documents.create",
+        "destroy": "documents.create",
         "my": "documents.view",
         "returned": "documents.view",
         "overdue": "documents.view",
@@ -140,6 +144,10 @@ class DocumentViewSet(viewsets.ModelViewSet):
         "approval": "documents.view",
         "approve": "documents.approve",
         "return_document": "documents.return",
+        "complete": ["documents.edit", "documents.create"],
+        "archive": "documents.archive",
+        "restore": "documents.archive",
+        "files": "documents.view",
         "comments": "documents.view",
         "history": "documents.view",
     }
@@ -155,7 +163,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
         )
         if getattr(self, "swagger_fake_view", False):
             return queryset.none()
-        return DocumentService.visible_to(self.request.user, queryset)
+        return DocumentAccessService.visible_to(self.request.user, queryset)
 
     def get_serializer_class(self):
         if self.action in {"create", "update", "partial_update"}:
@@ -272,10 +280,11 @@ class DocumentViewSet(viewsets.ModelViewSet):
     )
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
+        document = self.get_object()
         serializer = DocumentSubmitSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         route = ApprovalService.submit(
-            self.get_object(), request.user, serializer.validated_data["approvers"]
+            document, request.user, serializer.validated_data["approvers"]
         )
         return Response(ApprovalRouteSerializer(route).data)
 
@@ -327,10 +336,11 @@ class DocumentViewSet(viewsets.ModelViewSet):
     )
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
+        document = self.get_object()
         serializer = ApprovalDecisionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         route = ApprovalService.approve(
-            self.get_object(), request.user, serializer.validated_data["comment"]
+            document, request.user, serializer.validated_data["comment"]
         )
         return Response(ApprovalRouteSerializer(route).data)
 
@@ -342,10 +352,11 @@ class DocumentViewSet(viewsets.ModelViewSet):
     )
     @action(detail=True, methods=["post"], url_path="return")
     def return_document(self, request, pk=None):
+        document = self.get_object()
         serializer = ApprovalReturnSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         route = ApprovalService.return_document(
-            self.get_object(), request.user, serializer.validated_data["comment"]
+            document, request.user, serializer.validated_data["comment"]
         )
         return Response(ApprovalRouteSerializer(route).data)
 
@@ -429,7 +440,11 @@ class DocumentViewSet(viewsets.ModelViewSet):
 class DocumentFileViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
     queryset = DocumentFile.objects.none()
     serializer_class = DocumentFileSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasPermissionPerAction]
+    permission_map = {
+        "destroy": "documents.create",
+        "download": "documents.view",
+    }
     http_method_names = ["get", "delete", "head", "options"]
 
     def get_queryset(self):
@@ -438,7 +453,7 @@ class DocumentFileViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
         )
         if getattr(self, "swagger_fake_view", False):
             return queryset.none()
-        visible_documents = DocumentService.visible_to(self.request.user)
+        visible_documents = DocumentAccessService.visible_to(self.request.user)
         return queryset.filter(document__in=visible_documents)
 
     def perform_destroy(self, instance):
@@ -461,14 +476,18 @@ class DocumentFileViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
 class DocumentCommentViewSet(viewsets.GenericViewSet):
     queryset = DocumentComment.objects.none()
     serializer_class = DocumentCommentSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasPermissionPerAction]
+    permission_map = {
+        "partial_update": "documents.view",
+        "destroy": "documents.view",
+    }
     http_method_names = ["patch", "delete", "head", "options"]
 
     def get_queryset(self):
         queryset = DocumentComment.objects.select_related("document", "author")
         if getattr(self, "swagger_fake_view", False):
             return queryset.none()
-        visible_documents = DocumentService.visible_to(self.request.user)
+        visible_documents = DocumentAccessService.visible_to(self.request.user)
         return queryset.filter(document__in=visible_documents)
 
     @extend_schema(
