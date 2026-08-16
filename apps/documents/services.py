@@ -297,11 +297,18 @@ class FileService:
     @classmethod
     @transaction.atomic
     def upload(cls, document: Document, uploaded_file, user, is_main=False) -> DocumentFile:
+        document = Document.objects.select_for_update().get(pk=document.pk)
         if not DocumentAccessService.can_upload_file(user, document):
             DocumentService.ensure_can_edit(document, user)
         file_type, mime_type = cls.validate_upload(uploaded_file)
 
-        existing_files = document.files.exists()
+        existing_files_count = document.files.count()
+        if existing_files_count >= settings.MAX_DOCUMENT_FILES:
+            raise ValidationError(
+                f"К одному документу можно прикрепить не более {settings.MAX_DOCUMENT_FILES} файлов"
+            )
+
+        existing_files = existing_files_count > 0
         make_main = is_main or not existing_files
         if make_main:
             document.files.filter(is_main=True).update(is_main=False)
@@ -331,9 +338,33 @@ class FileService:
 
     @staticmethod
     @transaction.atomic
+    def make_main(document_file: DocumentFile, user) -> DocumentFile:
+        document = Document.objects.select_for_update().get(pk=document_file.document_id)
+        if not DocumentAccessService.can_upload_file(user, document):
+            DocumentService.ensure_can_edit(document, user)
+        document_file = DocumentFile.objects.select_for_update().get(pk=document_file.pk)
+        if document_file.is_main:
+            return document_file
+
+        document.files.filter(is_main=True).update(is_main=False)
+        document_file.is_main = True
+        document_file.save(update_fields=["is_main"])
+        HistoryService.record(
+            document,
+            user,
+            DocumentHistoryAction.UPDATED,
+            new_values={"main_file_id": document_file.id},
+            description=f"Файл {document_file.original_name} назначен основным",
+        )
+        return document_file
+
+    @staticmethod
+    @transaction.atomic
     def delete(document_file: DocumentFile, user) -> None:
-        if not DocumentAccessService.can_delete_file(user, document_file.document):
-            DocumentService.ensure_can_edit(document_file.document, user)
+        document = Document.objects.select_for_update().get(pk=document_file.document_id)
+        if not DocumentAccessService.can_delete_file(user, document):
+            DocumentService.ensure_can_edit(document, user)
+        document_file = DocumentFile.objects.select_for_update().get(pk=document_file.pk)
         HistoryService.record(
             document_file.document,
             user,
@@ -347,7 +378,17 @@ class FileService:
         )
         storage = document_file.file.storage
         stored_name = document_file.file.name
+        replacement = None
+        if document_file.is_main:
+            replacement = (
+                document.files.exclude(pk=document_file.pk)
+                .order_by("created_at")
+                .first()
+            )
         document_file.delete()
+        if replacement is not None:
+            replacement.is_main = True
+            replacement.save(update_fields=["is_main"])
         transaction.on_commit(lambda: storage.delete(stored_name))
 
 

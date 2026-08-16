@@ -501,8 +501,9 @@ class DocumentFileViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
     permission_map = {
         "destroy": "documents.create",
         "download": "documents.view",
+        "make_main": "documents.create",
     }
-    http_method_names = ["get", "delete", "head", "options"]
+    http_method_names = ["get", "post", "delete", "head", "options"]
 
     def get_queryset(self):
         queryset = DocumentFile.objects.select_related(
@@ -515,6 +516,21 @@ class DocumentFileViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
 
     def perform_destroy(self, instance):
         FileService.delete(instance, self.request.user)
+
+    @extend_schema(
+        summary="Назначить файл основным",
+        tags=["Document files"],
+        request=None,
+        responses={200: DocumentFileSerializer},
+    )
+    @action(detail=True, methods=["post"], url_path="make-main")
+    def make_main(self, request, pk=None):
+        document_file = FileService.make_main(self.get_object(), request.user)
+        return Response(
+            DocumentFileSerializer(
+                document_file, context=self.get_serializer_context()
+            ).data
+        )
 
     @extend_schema(summary="Скачать файл документа", tags=["Document files"])
     @action(detail=True, methods=["get"])

@@ -182,6 +182,7 @@ else:
     }
 
 MAX_DOCUMENT_FILE_SIZE = env.int("MAX_DOCUMENT_FILE_SIZE", default=20 * 1024 * 1024)
+MAX_DOCUMENT_FILES = env.int("MAX_DOCUMENT_FILES", default=10)
 DOCUMENT_NUMBER_FORMAT = env(
     "DOCUMENT_NUMBER_FORMAT", default="{prefix}-{department}-{year}-{number}"
 )
