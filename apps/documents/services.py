@@ -29,6 +29,7 @@ from .models import (
     DocumentNumberCounter,
     DocumentStatus,
 )
+from .transitions import DocumentStateMachine, DocumentTransitionAction
 
 
 class DocumentCategoryService:
@@ -82,11 +83,13 @@ class DocumentService:
     @staticmethod
     @transaction.atomic
     def complete(document: Document, user) -> Document:
-        if document.status != DocumentStatus.APPROVED:
-            raise ValidationError("Завершить можно только согласованный документ")
+        document = Document.objects.select_for_update().get(pk=document.pk)
+        target_status = DocumentStateMachine.target_status(
+            document, DocumentTransitionAction.COMPLETE
+        )
         if not DocumentAccessService.can_complete(user, document):
             raise PermissionDenied("Недостаточно прав для завершения документа")
-        document.status = DocumentStatus.COMPLETED
+        document.status = target_status
         document.completed_at = timezone.now()
         document.save(update_fields=["status", "completed_at", "updated_at"])
         HistoryService.record(
@@ -102,12 +105,16 @@ class DocumentService:
     @staticmethod
     @transaction.atomic
     def archive(document: Document, user) -> Document:
-        if document.status != DocumentStatus.COMPLETED:
-            raise ValidationError("Архивировать можно только завершённый документ")
+        document = Document.objects.select_for_update().select_related("author").get(
+            pk=document.pk
+        )
+        target_status = DocumentStateMachine.target_status(
+            document, DocumentTransitionAction.ARCHIVE
+        )
         if not DocumentAccessService.can_archive(user, document):
             raise PermissionDenied("Недостаточно прав для архивирования документа")
         previous_status = document.status
-        document.status = DocumentStatus.ARCHIVED
+        document.status = target_status
         document.archived_at = timezone.now()
         document.save(update_fields=["status", "archived_at", "updated_at"])
         HistoryService.record(
@@ -131,13 +138,12 @@ class DocumentService:
     @staticmethod
     @transaction.atomic
     def restore(document: Document, user) -> Document:
-        if document.status != DocumentStatus.ARCHIVED:
-            raise ValidationError("Документ не находится в архиве")
+        document = Document.objects.select_for_update().get(pk=document.pk)
+        restored_status = DocumentStateMachine.target_status(
+            document, DocumentTransitionAction.RESTORE
+        )
         if not DocumentAccessService.can_restore(user, document):
             raise PermissionDenied("Недостаточно прав для восстановления документа")
-        restored_status = (
-            DocumentStatus.COMPLETED if document.completed_at else DocumentStatus.APPROVED
-        )
         document.status = restored_status
         document.archived_at = None
         document.save(update_fields=["status", "archived_at", "updated_at"])
@@ -334,6 +340,8 @@ class ApprovalService:
     @transaction.atomic
     def submit(cls, document: Document, user, approvers: list) -> ApprovalRoute:
         document = cls._locked_document(document)
+        transition_action = DocumentStateMachine.submission_action(document)
+        target_status = DocumentStateMachine.target_status(document, transition_action)
         DocumentService.ensure_can_edit(document, user)
         previous_status = document.status
 
@@ -363,7 +371,7 @@ class ApprovalService:
             ]
         )
 
-        document.status = DocumentStatus.IN_REVIEW
+        document.status = target_status
         document.submitted_at = timezone.now()
         document.approved_at = None
         document.current_approval_step = 1
@@ -418,8 +426,9 @@ class ApprovalService:
     @transaction.atomic
     def approve(cls, document: Document, user, comment="") -> ApprovalRoute:
         document = cls._locked_document(document)
-        if document.status != DocumentStatus.IN_REVIEW:
-            raise ValidationError("Документ не находится на согласовании")
+        approved_status = DocumentStateMachine.target_status(
+            document, DocumentTransitionAction.APPROVE
+        )
         route = ApprovalRoute.objects.select_for_update().get(
             document=document, status=ApprovalRouteStatus.ACTIVE
         )
@@ -473,7 +482,7 @@ class ApprovalService:
             route.status = ApprovalRouteStatus.COMPLETED
             route.completed_at = now
             route.save(update_fields=["status", "completed_at"])
-            document.status = DocumentStatus.APPROVED
+            document.status = approved_status
             document.approved_at = now
             document.current_approval_step = None
             document.save(
@@ -509,8 +518,9 @@ class ApprovalService:
     @transaction.atomic
     def return_document(cls, document: Document, user, comment: str) -> ApprovalRoute:
         document = cls._locked_document(document)
-        if document.status != DocumentStatus.IN_REVIEW:
-            raise ValidationError("Документ не находится на согласовании")
+        returned_status = DocumentStateMachine.target_status(
+            document, DocumentTransitionAction.RETURN
+        )
         route = ApprovalRoute.objects.select_for_update().get(
             document=document, status=ApprovalRouteStatus.ACTIVE
         )
@@ -547,7 +557,7 @@ class ApprovalService:
         route.status = ApprovalRouteStatus.RETURNED
         route.completed_at = now
         route.save(update_fields=["status", "completed_at"])
-        document.status = DocumentStatus.RETURNED
+        document.status = returned_status
         document.current_approval_step = None
         document.save(update_fields=["status", "current_approval_step", "updated_at"])
         HistoryService.record(
