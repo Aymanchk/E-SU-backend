@@ -1,5 +1,10 @@
-import pytest
+from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+from django.db import close_old_connections
+from rest_framework.exceptions import APIException
+
+from apps.accounts.models import User
 from apps.documents.models import (
     ApprovalAction,
     ApprovalActionType,
@@ -10,6 +15,7 @@ from apps.documents.models import (
     DocumentCategory,
     DocumentStatus,
 )
+from apps.documents.services import ApprovalService
 
 pytestmark = pytest.mark.django_db
 
@@ -135,6 +141,25 @@ class TestSequentialApproval:
         )
         assert response.status_code == 403
 
+    def test_same_step_cannot_be_approved_twice(
+        self, employee_client, manager_client, approval_document, manager
+    ):
+        submit(employee_client, approval_document, manager)
+
+        first = manager_client.post(
+            f"/api/documents/{approval_document.id}/approve/", {}, format="json"
+        )
+        second = manager_client.post(
+            f"/api/documents/{approval_document.id}/approve/", {}, format="json"
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 400
+        assert ApprovalAction.objects.filter(
+            document=approval_document,
+            action=ApprovalActionType.APPROVE,
+        ).count() == 1
+
     def test_for_approval_contains_only_current_step(
         self,
         employee_client,
@@ -210,3 +235,51 @@ class TestApprovalReturn:
         assert response.status_code == 200
         assert len(response.json()["data"]["steps"]) == 1
         assert len(response.json()["data"]["actions"]) == 1
+
+
+@pytest.mark.django_db(transaction=True, serialized_rollback=True)
+def test_concurrent_approve_creates_single_action_and_transition(
+    employee,
+    manager,
+    child_department,
+    admin,
+):
+    category = DocumentCategory.objects.create(
+        name="Конкурентное согласование",
+        code="concurrent-approval",
+        retention_period_days=365,
+        created_by=admin,
+        updated_by=admin,
+    )
+    document = Document.objects.create(
+        title="Конкурентное согласование",
+        document_type="memo",
+        category=category,
+        author=employee,
+        department=child_department,
+    )
+    ApprovalService.submit(document, employee, [manager])
+
+    def approve():
+        close_old_connections()
+        try:
+            thread_user = User.objects.get(pk=manager.pk)
+            thread_document = Document.objects.get(pk=document.pk)
+            ApprovalService.approve(thread_document, thread_user)
+            return "approved"
+        except APIException:
+            return "rejected"
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(lambda _: approve(), range(2)))
+
+    document.refresh_from_db()
+    assert sorted(outcomes) == ["approved", "rejected"]
+    assert document.status == DocumentStatus.APPROVED
+    assert ApprovalAction.objects.filter(
+        document=document,
+        action=ApprovalActionType.APPROVE,
+    ).count() == 1
+    assert document.history.filter(action="approved").count() == 1
