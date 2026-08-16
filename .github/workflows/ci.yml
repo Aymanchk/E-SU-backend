@@ -1,0 +1,81 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: esu
+          POSTGRES_USER: esu
+          POSTGRES_PASSWORD: esu
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U esu -d esu"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DJANGO_SETTINGS_MODULE: config.settings.development
+      SECRET_KEY: ci-only-secret-key
+      DEBUG: "False"
+      DATABASE_URL: postgres://esu:esu@localhost:5432/esu
+      REDIS_URL: redis://localhost:6379/0
+      NOTIFICATION_EMAIL_ENABLED: "False"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements/development.txt
+
+      - name: Check migrations
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Apply migrations from scratch
+        run: python manage.py migrate --noinput
+
+      - name: Django system check
+        run: python manage.py check
+
+      - name: Validate OpenAPI schema
+        run: python manage.py spectacular --file /tmp/schema.yml --validate
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Tests and coverage
+        run: pytest --create-db --cov=apps --cov-report=term --cov-fail-under=85 -q
