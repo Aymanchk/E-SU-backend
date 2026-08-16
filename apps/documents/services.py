@@ -10,7 +10,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from apps.accounts.models import User, UserStatus
 from apps.audit.constants import AuditAction
 from apps.audit.services import log_action
-from apps.notifications.models import NotificationType
+from apps.notifications.models import Notification, NotificationType
 from apps.notifications.services import NotificationService
 
 from .access import DocumentAccessService
@@ -928,46 +928,57 @@ class HistoryService:
 
 class DashboardService:
     LIST_LIMIT = 5
-    ACTIONS_LIMIT = 10
 
     @staticmethod
     def documents_for(user) -> QuerySet:
-        queryset = Document.objects.all()
-        if not (user.is_superuser or user.is_admin_role):
-            role_code = user.role.code if user.role_id else None
-            if role_code == "employee":
-                queryset = queryset.filter(author=user)
-            else:
-                queryset = DocumentService.visible_to(user, queryset)
+        return DocumentAccessService.visible_to(
+            user,
+            Document.objects.select_related(
+                "category", "author", "department", "responsible"
+            ),
+        )
 
-        return queryset.select_related("category", "author", "department", "responsible")
+    @staticmethod
+    def quick_actions(user, approval_count: int) -> list[dict]:
+        actions = []
+        if user.has_permission("documents.create"):
+            actions.append(
+                {"code": "create_document", "label": "Создать документ", "url": "/documents/new"}
+            )
+        if approval_count:
+            actions.append(
+                {"code": "review_documents", "label": "Согласовать документы", "url": "/documents/for-approval"}
+            )
+        if user.has_permission("documents.register"):
+            actions.append(
+                {"code": "register_documents", "label": "Зарегистрировать документы", "url": "/documents"}
+            )
+        return actions
 
     @classmethod
     def build(cls, user) -> dict:
         documents = cls.documents_for(user)
+        approval_documents = documents.filter(
+            approval_steps__status=ApprovalStepStatus.CURRENT,
+            approval_steps__approver=user,
+        ).distinct()
         counters = documents.aggregate(
-            total_documents=Count("id"),
-            in_review=Count("id", filter=Q(status=DocumentStatus.IN_REVIEW)),
+            all=Count("id"),
+            my=Count("id", filter=Q(author=user)),
             returned=Count("id", filter=Q(status=DocumentStatus.RETURNED)),
             overdue=Count("id", filter=Q(status=DocumentStatus.OVERDUE)),
-            completed=Count("id", filter=Q(status=DocumentStatus.COMPLETED)),
+            archived=Count("id", filter=Q(status=DocumentStatus.ARCHIVED)),
         )
-
-        approval_tasks = ApprovalStep.objects.filter(status=ApprovalStepStatus.CURRENT)
-        if not (user.is_superuser or user.is_admin_role):
-            approval_tasks = approval_tasks.filter(approver=user)
-
-        visible_ids = documents.values("id")
+        approval_count = approval_documents.count()
+        counters["for_approval"] = approval_count
         return {
-            **counters,
-            "approval_tasks": approval_tasks.count(),
+            "counters": counters,
             "recent_documents": documents.order_by("-created_at")[: cls.LIST_LIMIT],
-            "upcoming_deadlines": documents.filter(
-                deadline__gte=timezone.now(),
-            )
-            .exclude(status__in=[DocumentStatus.COMPLETED, DocumentStatus.ARCHIVED])
-            .order_by("deadline")[: cls.LIST_LIMIT],
-            "recent_actions": DocumentHistory.objects.filter(document_id__in=visible_ids)
-            .select_related("document", "user")
-            .order_by("-created_at")[: cls.ACTIONS_LIMIT],
+            "approval_documents": approval_documents.order_by("-created_at")[
+                : cls.LIST_LIMIT
+            ],
+            "recent_notifications": Notification.objects.filter(recipient=user)
+            .select_related("document")
+            .order_by("-created_at")[: cls.LIST_LIMIT],
+            "quick_actions": cls.quick_actions(user, approval_count),
         }
