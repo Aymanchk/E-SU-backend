@@ -7,6 +7,7 @@ from django.db.models import Count, Q, QuerySet
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
+from apps.accounts.models import User, UserStatus
 from apps.notifications.models import NotificationType
 from apps.notifications.services import NotificationService
 
@@ -15,9 +16,13 @@ from .models import (
     ApprovalAction,
     ApprovalActionType,
     ApprovalRoute,
+    ApprovalRouteSource,
     ApprovalRouteStatus,
+    ApprovalRouteTemplate,
     ApprovalStep,
     ApprovalStepStatus,
+    ApprovalTemplateApproverType,
+    ApprovalTemplateDepartmentRelation,
     Document,
     DocumentCategory,
     DocumentCategoryStatus,
@@ -336,6 +341,117 @@ class ApprovalService:
         if not DocumentAccessService.can_approve(user, step.document):
             raise PermissionDenied("Действие доступно только текущему согласующему")
 
+    @staticmethod
+    def _is_active_approver(user) -> bool:
+        return bool(
+            user
+            and user.status == UserStatus.ACTIVE
+            and user.is_active
+            and not user.is_deleted
+        )
+
+    @classmethod
+    def _resolve_template_step(cls, document: Document, step):
+        if step.approver_type == ApprovalTemplateApproverType.SPECIFIC_USER:
+            return step.specific_user
+        if step.approver_type == ApprovalTemplateApproverType.DOCUMENT_RESPONSIBLE:
+            return document.responsible
+        if step.approver_type == ApprovalTemplateApproverType.DEPARTMENT_MANAGER:
+            department = (
+                document.author.department
+                if step.department_relation
+                == ApprovalTemplateDepartmentRelation.AUTHOR_DEPARTMENT
+                else document.department
+            )
+            return department.manager if department else None
+        if step.approver_type == ApprovalTemplateApproverType.ROLE:
+            candidates = User.objects.filter(
+                role=step.role,
+                status=UserStatus.ACTIVE,
+                is_active=True,
+            ).select_related("role")
+            return (
+                candidates.filter(department=document.department).order_by("email").first()
+                or candidates.order_by("email").first()
+            )
+        return None
+
+    @classmethod
+    def _resolve_route(cls, document: Document, manual_approvers: list):
+        if manual_approvers:
+            ids = [approver.id for approver in manual_approvers]
+            if len(ids) != len(set(ids)):
+                raise ValidationError("Согласующие в маршруте не должны повторяться")
+            if not all(cls._is_active_approver(approver) for approver in manual_approvers):
+                raise ValidationError("Все согласующие должны быть активны")
+            return (
+                manual_approvers,
+                None,
+                ApprovalRouteSource.MANUAL,
+                {
+                    "source": ApprovalRouteSource.MANUAL,
+                    "approvers": [str(approver.id) for approver in manual_approvers],
+                },
+            )
+
+        template = (
+            ApprovalRouteTemplate.objects.filter(
+                category=document.category, is_active=True
+            )
+            .prefetch_related("steps__role", "steps__specific_user")
+            .first()
+        )
+        if template is None:
+            raise ValidationError(
+                "Передайте согласующих вручную или настройте активный шаблон категории"
+            )
+
+        approvers = []
+        snapshot_steps = []
+        seen_ids = set()
+        for step in template.steps.all():
+            approver = cls._resolve_template_step(document, step)
+            if not cls._is_active_approver(approver):
+                if step.is_required:
+                    raise ValidationError(
+                        f"Не удалось определить активного согласующего для шага {step.order}"
+                    )
+                continue
+            if approver.id in seen_ids:
+                raise ValidationError(
+                    f"Пользователь {approver.email} повторяется в шаблоне согласования"
+                )
+            seen_ids.add(approver.id)
+            approvers.append(approver)
+            snapshot_steps.append(
+                {
+                    "template_order": step.order,
+                    "route_order": len(approvers),
+                    "approver_type": step.approver_type,
+                    "role_id": str(step.role_id) if step.role_id else None,
+                    "specific_user_id": (
+                        str(step.specific_user_id) if step.specific_user_id else None
+                    ),
+                    "department_relation": step.department_relation,
+                    "is_required": step.is_required,
+                    "resolved_approver_id": str(approver.id),
+                }
+            )
+
+        if not approvers:
+            raise ValidationError("Шаблон категории не создал ни одного шага согласования")
+        return (
+            approvers,
+            template,
+            ApprovalRouteSource.CATEGORY_TEMPLATE,
+            {
+                "source": ApprovalRouteSource.CATEGORY_TEMPLATE,
+                "template_id": str(template.id),
+                "template_name": template.name,
+                "steps": snapshot_steps,
+            },
+        )
+
     @classmethod
     @transaction.atomic
     def submit(cls, document: Document, user, approvers: list) -> ApprovalRoute:
@@ -344,6 +460,11 @@ class ApprovalService:
         target_status = DocumentStateMachine.target_status(document, transition_action)
         DocumentService.ensure_can_edit(document, user)
         previous_status = document.status
+        if document.category.requires_file and not document.files.exists():
+            raise ValidationError("Для этой категории необходимо загрузить файл")
+        approvers, template, route_source, route_snapshot = cls._resolve_route(
+            document, approvers
+        )
 
         ApprovalRoute.objects.filter(document=document, status=ApprovalRouteStatus.ACTIVE).update(
             status=ApprovalRouteStatus.CANCELLED, completed_at=timezone.now()
@@ -354,7 +475,13 @@ class ApprovalService:
             status__in=[ApprovalStepStatus.PENDING, ApprovalStepStatus.CURRENT],
         ).update(status=ApprovalStepStatus.CANCELLED)
 
-        route = ApprovalRoute.objects.create(document=document, created_by=user)
+        route = ApprovalRoute.objects.create(
+            document=document,
+            created_by=user,
+            source=route_source,
+            template=template,
+            template_snapshot=route_snapshot,
+        )
         ApprovalStep.objects.bulk_create(
             [
                 ApprovalStep(

@@ -300,6 +300,11 @@ class ApprovalRouteStatus(models.TextChoices):
     CANCELLED = "cancelled", "Отменён"
 
 
+class ApprovalRouteSource(models.TextChoices):
+    MANUAL = "manual", "Ручной маршрут"
+    CATEGORY_TEMPLATE = "category_template", "Шаблон категории"
+
+
 class ApprovalStepStatus(models.TextChoices):
     PENDING = "pending", "Ожидает"
     CURRENT = "current", "Текущий"
@@ -326,6 +331,23 @@ class ApprovalRoute(UUIDModel):
         choices=ApprovalRouteStatus.choices,
         default=ApprovalRouteStatus.ACTIVE,
         db_index=True,
+    )
+    source = models.CharField(
+        "Источник маршрута",
+        max_length=30,
+        choices=ApprovalRouteSource.choices,
+        default=ApprovalRouteSource.MANUAL,
+    )
+    template = models.ForeignKey(
+        ApprovalRouteTemplate,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="approval_routes",
+        verbose_name="Исходный шаблон",
+    )
+    template_snapshot = models.JSONField(
+        "Снимок шаблона", default=dict, blank=True
     )
     created_by = models.ForeignKey(
         "accounts.User",

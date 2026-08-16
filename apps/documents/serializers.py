@@ -360,12 +360,16 @@ class DocumentSubmitSerializer(serializers.Serializer):
             "role"
         ),
         many=True,
+        required=False,
+        default=list,
+        help_text=(
+            "Непустой список создаёт ручной маршрут и имеет приоритет. "
+            "Если список не передан или пуст, используется активный шаблон категории."
+        ),
     )
 
     def validate_approvers(self, value):
         ids = [approver.id for approver in value]
-        if not ids:
-            raise serializers.ValidationError("Добавьте хотя бы одного согласующего")
         if len(ids) != len(set(ids)):
             raise serializers.ValidationError("Согласующие в маршруте не должны повторяться")
         return value
@@ -416,6 +420,9 @@ class ApprovalRouteSerializer(serializers.ModelSerializer):
             "id",
             "document",
             "status",
+            "source",
+            "template",
+            "template_snapshot",
             "created_by",
             "created_at",
             "completed_at",
