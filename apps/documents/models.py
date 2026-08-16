@@ -227,6 +227,15 @@ class Document(UUIDModel, SoftDeleteModel):
             models.Index(fields=["department", "status"]),
             models.Index(fields=["responsible", "status"]),
             models.Index(fields=["category", "status"]),
+            models.Index(
+                fields=["status", "deadline"], name="doc_status_deadline_idx"
+            ),
+            models.Index(
+                fields=["status", "created_at"], name="doc_status_created_idx"
+            ),
+            models.Index(
+                fields=["author", "created_at"], name="doc_author_created_idx"
+            ),
         ]
 
     def __str__(self):
