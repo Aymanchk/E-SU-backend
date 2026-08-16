@@ -1,3 +1,4 @@
+from django.db import transaction
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
@@ -8,7 +9,11 @@ from apps.organizations.serializers import DepartmentShortSerializer
 from .models import (
     ApprovalAction,
     ApprovalRoute,
+    ApprovalRouteTemplate,
+    ApprovalRouteTemplateStep,
     ApprovalStep,
+    ApprovalTemplateApproverType,
+    ApprovalTemplateDepartmentRelation,
     Document,
     DocumentCategory,
     DocumentCategoryStatus,
@@ -23,6 +28,8 @@ class DocumentCategorySerializer(serializers.ModelSerializer):
     allowed_departments_details = DepartmentShortSerializer(
         source="allowed_departments", many=True, read_only=True
     )
+    document_count = serializers.IntegerField(read_only=True, default=0)
+    approval_route_template = serializers.SerializerMethodField()
 
     class Meta:
         model = DocumentCategory
@@ -32,9 +39,12 @@ class DocumentCategorySerializer(serializers.ModelSerializer):
             "code",
             "description",
             "retention_period_days",
+            "requires_file",
             "allowed_departments",
             "allowed_departments_details",
             "status",
+            "document_count",
+            "approval_route_template",
             "created_by",
             "created_at",
             "updated_at",
@@ -48,6 +58,136 @@ class DocumentCategorySerializer(serializers.ModelSerializer):
         if queryset.exists():
             raise serializers.ValidationError("Категория с таким кодом уже существует")
         return value
+
+    @extend_schema_field(serializers.DictField(allow_null=True))
+    def get_approval_route_template(self, obj):
+        template = next(
+            (item for item in obj.approval_route_templates.all() if item.is_active),
+            None,
+        )
+        if template is None:
+            return None
+        return ApprovalRouteTemplateSerializer(template).data
+
+
+class ApprovalRouteTemplateStepSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ApprovalRouteTemplateStep
+        fields = [
+            "id",
+            "order",
+            "approver_type",
+            "role",
+            "specific_user",
+            "department_relation",
+            "is_required",
+        ]
+        read_only_fields = ["id"]
+
+    def validate(self, attrs):
+        approver_type = attrs.get("approver_type")
+        role = attrs.get("role")
+        specific_user = attrs.get("specific_user")
+        department_relation = attrs.get("department_relation", "")
+
+        if attrs.get("order", 0) < 1:
+            raise serializers.ValidationError({"order": "Порядок шага начинается с 1"})
+        if approver_type == ApprovalTemplateApproverType.SPECIFIC_USER:
+            if specific_user is None:
+                raise serializers.ValidationError(
+                    {"specific_user": "Укажите конкретного пользователя"}
+                )
+            if role or department_relation:
+                raise serializers.ValidationError(
+                    "Для specific_user нельзя указывать role или department_relation"
+                )
+        elif approver_type == ApprovalTemplateApproverType.ROLE:
+            if role is None:
+                raise serializers.ValidationError({"role": "Укажите роль согласующего"})
+            if specific_user or department_relation:
+                raise serializers.ValidationError(
+                    "Для role нельзя указывать specific_user или department_relation"
+                )
+        elif approver_type == ApprovalTemplateApproverType.DEPARTMENT_MANAGER:
+            if role or specific_user:
+                raise serializers.ValidationError(
+                    "Для department_manager нельзя указывать role или specific_user"
+                )
+            attrs["department_relation"] = (
+                department_relation
+                or ApprovalTemplateDepartmentRelation.DOCUMENT_DEPARTMENT
+            )
+        elif approver_type == ApprovalTemplateApproverType.DOCUMENT_RESPONSIBLE:
+            if role or specific_user or department_relation:
+                raise serializers.ValidationError(
+                    "Для document_responsible дополнительные параметры не нужны"
+                )
+        return attrs
+
+
+class ApprovalRouteTemplateSerializer(serializers.ModelSerializer):
+    steps = ApprovalRouteTemplateStepSerializer(many=True)
+
+    class Meta:
+        model = ApprovalRouteTemplate
+        fields = [
+            "id",
+            "category",
+            "name",
+            "is_active",
+            "steps",
+            "created_by",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_by", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        steps = attrs.get("steps")
+        if self.instance is None and not steps:
+            raise serializers.ValidationError({"steps": "Добавьте хотя бы один шаг"})
+        if steps is not None:
+            orders = [step["order"] for step in steps]
+            if len(orders) != len(set(orders)):
+                raise serializers.ValidationError(
+                    {"steps": "Порядок шагов не должен повторяться"}
+                )
+
+        category = attrs.get("category", getattr(self.instance, "category", None))
+        is_active = attrs.get("is_active", getattr(self.instance, "is_active", True))
+        if category and is_active:
+            active_templates = ApprovalRouteTemplate.objects.filter(
+                category=category, is_active=True
+            )
+            if self.instance:
+                active_templates = active_templates.exclude(pk=self.instance.pk)
+            if active_templates.exists():
+                raise serializers.ValidationError(
+                    {"is_active": "У категории уже есть активный шаблон"}
+                )
+        return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        steps = validated_data.pop("steps")
+        template = ApprovalRouteTemplate.objects.create(**validated_data)
+        ApprovalRouteTemplateStep.objects.bulk_create(
+            [ApprovalRouteTemplateStep(template=template, **step) for step in steps]
+        )
+        return template
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        steps = validated_data.pop("steps", None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save()
+        if steps is not None:
+            instance.steps.all().delete()
+            ApprovalRouteTemplateStep.objects.bulk_create(
+                [ApprovalRouteTemplateStep(template=instance, **step) for step in steps]
+            )
+        return instance
 
 
 class DocumentCategoryShortSerializer(serializers.ModelSerializer):

@@ -3,6 +3,8 @@ from django.contrib import admin
 from .models import (
     ApprovalAction,
     ApprovalRoute,
+    ApprovalRouteTemplate,
+    ApprovalRouteTemplateStep,
     ApprovalStep,
     Document,
     DocumentCategory,
@@ -19,6 +21,19 @@ class DocumentCategoryAdmin(admin.ModelAdmin):
     list_filter = ("status",)
     search_fields = ("name", "code")
     filter_horizontal = ("allowed_departments",)
+
+
+class ApprovalRouteTemplateStepInline(admin.TabularInline):
+    model = ApprovalRouteTemplateStep
+    extra = 0
+
+
+@admin.register(ApprovalRouteTemplate)
+class ApprovalRouteTemplateAdmin(admin.ModelAdmin):
+    list_display = ("name", "category", "is_active", "created_at")
+    list_filter = ("is_active", "category")
+    search_fields = ("name", "category__name", "category__code")
+    inlines = (ApprovalRouteTemplateStepInline,)
 
 
 @admin.register(Document)

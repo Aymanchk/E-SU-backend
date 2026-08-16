@@ -17,6 +17,7 @@ class DocumentCategory(UUIDModel, TimeStampedModel, SoftDeleteModel):
     code = models.SlugField("Код", max_length=50, unique=True, db_index=True)
     description = models.TextField("Описание", blank=True)
     retention_period_days = models.PositiveIntegerField("Срок хранения (дней)")
+    requires_file = models.BooleanField("Обязательный файл", default=False)
     allowed_departments = models.ManyToManyField(
         "organizations.Department",
         blank=True,
@@ -38,6 +39,96 @@ class DocumentCategory(UUIDModel, TimeStampedModel, SoftDeleteModel):
 
     def __str__(self):
         return self.name
+
+
+class ApprovalTemplateApproverType(models.TextChoices):
+    SPECIFIC_USER = "specific_user", "Конкретный пользователь"
+    ROLE = "role", "Роль"
+    DEPARTMENT_MANAGER = "department_manager", "Руководитель подразделения"
+    DOCUMENT_RESPONSIBLE = "document_responsible", "Ответственный за документ"
+
+
+class ApprovalTemplateDepartmentRelation(models.TextChoices):
+    AUTHOR_DEPARTMENT = "author_department", "Подразделение автора"
+    DOCUMENT_DEPARTMENT = "document_department", "Подразделение документа"
+
+
+class ApprovalRouteTemplate(UUIDModel, TimeStampedModel):
+    category = models.ForeignKey(
+        DocumentCategory,
+        on_delete=models.CASCADE,
+        related_name="approval_route_templates",
+        verbose_name="Категория",
+    )
+    name = models.CharField("Название", max_length=200)
+    is_active = models.BooleanField("Активен", default=True, db_index=True)
+
+    class Meta:
+        ordering = ["category", "name"]
+        verbose_name = "Шаблон маршрута согласования"
+        verbose_name_plural = "Шаблоны маршрутов согласования"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["category"],
+                condition=Q(is_active=True),
+                name="unique_active_route_template_category",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.category}: {self.name}"
+
+
+class ApprovalRouteTemplateStep(UUIDModel):
+    template = models.ForeignKey(
+        ApprovalRouteTemplate,
+        on_delete=models.CASCADE,
+        related_name="steps",
+        verbose_name="Шаблон",
+    )
+    order = models.PositiveIntegerField("Порядок")
+    approver_type = models.CharField(
+        "Тип согласующего",
+        max_length=30,
+        choices=ApprovalTemplateApproverType.choices,
+    )
+    role = models.ForeignKey(
+        "accounts.Role",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="approval_template_steps",
+        verbose_name="Роль",
+    )
+    specific_user = models.ForeignKey(
+        "accounts.User",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="approval_template_steps",
+        verbose_name="Конкретный пользователь",
+    )
+    department_relation = models.CharField(
+        "Связь с подразделением",
+        max_length=30,
+        choices=ApprovalTemplateDepartmentRelation.choices,
+        blank=True,
+    )
+    is_required = models.BooleanField("Обязательный шаг", default=True)
+
+    class Meta:
+        ordering = ["order"]
+        verbose_name = "Шаг шаблона согласования"
+        verbose_name_plural = "Шаги шаблона согласования"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["template", "order"],
+                name="unique_route_template_step_order",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.template}: {self.order}"
 
 
 class DocumentPriority(models.TextChoices):

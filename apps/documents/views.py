@@ -1,3 +1,4 @@
+from django.db.models import Count, Q
 from django.http import FileResponse
 from drf_spectacular.utils import extend_schema, extend_schema_view
 from rest_framework import mixins, status, viewsets
@@ -13,6 +14,7 @@ from apps.notifications.services import NotificationService
 from .access import DocumentAccessService
 from .filters import DocumentCategoryFilter, DocumentFilter
 from .models import (
+    ApprovalRouteTemplate,
     ApprovalStep,
     ApprovalStepStatus,
     Document,
@@ -25,6 +27,7 @@ from .serializers import (
     ApprovalDecisionSerializer,
     ApprovalReturnSerializer,
     ApprovalRouteSerializer,
+    ApprovalRouteTemplateSerializer,
     DashboardSerializer,
     DocumentCategorySerializer,
     DocumentCommentCreateSerializer,
@@ -91,7 +94,18 @@ class DocumentCategoryViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return (
             DocumentCategory.objects.select_related("created_by")
-            .prefetch_related("allowed_departments")
+            .prefetch_related(
+                "allowed_departments",
+                "approval_route_templates__steps__role",
+                "approval_route_templates__steps__specific_user",
+            )
+            .annotate(
+                document_count=Count(
+                    "documents",
+                    filter=Q(documents__is_deleted=False),
+                    distinct=True,
+                )
+            )
             .distinct()
         )
 
@@ -115,6 +129,41 @@ class DocumentCategoryViewSet(viewsets.ModelViewSet):
     def deactivate(self, request, pk=None):
         category = DocumentCategoryService.deactivate(self.get_object(), request.user)
         return Response(self.get_serializer(category).data)
+
+
+@extend_schema_view(
+    list=extend_schema(summary="Список шаблонов маршрутов", tags=["Approval templates"]),
+    retrieve=extend_schema(summary="Шаблон маршрута", tags=["Approval templates"]),
+    create=extend_schema(summary="Создать шаблон маршрута", tags=["Approval templates"]),
+    partial_update=extend_schema(summary="Изменить шаблон маршрута", tags=["Approval templates"]),
+    destroy=extend_schema(summary="Удалить шаблон маршрута", tags=["Approval templates"]),
+)
+class ApprovalRouteTemplateViewSet(viewsets.ModelViewSet):
+    serializer_class = ApprovalRouteTemplateSerializer
+    permission_classes = [IsAuthenticated, HasPermissionPerAction]
+    permission_map = {
+        "list": "categories.manage",
+        "retrieve": "categories.manage",
+        "create": "categories.manage",
+        "update": "categories.manage",
+        "partial_update": "categories.manage",
+        "destroy": "categories.manage",
+    }
+    filterset_fields = ["category", "is_active"]
+    ordering_fields = ["name", "created_at", "updated_at"]
+    ordering = ["category__name", "name"]
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
+
+    def get_queryset(self):
+        return ApprovalRouteTemplate.objects.select_related("category").prefetch_related(
+            "steps__role", "steps__specific_user"
+        )
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user, updated_by=self.request.user)
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user)
 
 
 @extend_schema_view(
