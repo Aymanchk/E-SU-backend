@@ -1,7 +1,7 @@
 from django.db.models import Count, Q
 from django.http import FileResponse
 from drf_spectacular.utils import extend_schema, extend_schema_view
-from rest_framework import mixins, status, viewsets
+from rest_framework import mixins, parsers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -425,7 +425,11 @@ class DocumentViewSet(viewsets.ModelViewSet):
         request=DocumentFileUploadSerializer,
         responses={200: DocumentFileSerializer(many=True), 201: DocumentFileSerializer},
     )
-    @action(detail=True, methods=["get", "post"])
+    @action(
+        detail=True,
+        methods=["get", "post"],
+        parser_classes=[parsers.MultiPartParser],
+    )
     def files(self, request, pk=None):
         document = self.get_object()
         if request.method == "POST":
