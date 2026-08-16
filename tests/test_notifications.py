@@ -6,8 +6,17 @@ from django.utils import timezone
 
 from apps.documents.models import Document, DocumentCategory, DocumentStatus
 from apps.notifications.models import Notification, NotificationType
-from apps.notifications.services import DeadlineService, NotificationService
-from apps.notifications.tasks import send_notification_email
+from apps.notifications.services import (
+    DeadlineService,
+    NotificationCleanupService,
+    NotificationService,
+)
+from apps.notifications.tasks import (
+    check_upcoming_document_deadlines,
+    cleanup_old_notifications,
+    mark_overdue_documents,
+    send_notification_email,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -142,7 +151,11 @@ class TestDeadlineService:
 
         notification_document.refresh_from_db()
         assert notification_document.status == DocumentStatus.OVERDUE
+        assert notification_document.status_before_overdue == DocumentStatus.DRAFT
         assert Notification.objects.filter(type=NotificationType.DOCUMENT_OVERDUE).count() == 1
+        assert notification_document.history.filter(
+            description="Документ автоматически отмечен просроченным"
+        ).count() == 1
 
     def test_in_review_is_not_changed_to_overdue(self, employee, notification_document):
         now = timezone.now()
@@ -175,6 +188,55 @@ class TestDeadlineService:
             responsible.id,
         }
         assert notifications.count() == 2
+
+    def test_repeated_overdue_check_does_not_duplicate_history(
+        self, notification_document
+    ):
+        now = timezone.now()
+        notification_document.deadline = now - timedelta(minutes=1)
+        notification_document.save(update_fields=["deadline"])
+
+        DeadlineService.check(now=now)
+        DeadlineService.check(now=now)
+
+        assert notification_document.history.filter(
+            description="Документ автоматически отмечен просроченным"
+        ).count() == 1
+
+
+class TestPeriodicTasks:
+    def test_deadline_tasks(self, notification_document):
+        notification_document.deadline = timezone.now() + timedelta(hours=12)
+        notification_document.save(update_fields=["deadline"])
+        assert check_upcoming_document_deadlines.run() == 1
+
+        notification_document.deadline = timezone.now() - timedelta(minutes=1)
+        notification_document.save(update_fields=["deadline"])
+        assert mark_overdue_documents.run() == 1
+
+    def test_cleanup_deletes_only_old_read_notifications(
+        self, settings, employee, notification_document
+    ):
+        settings.NOTIFICATION_RETENTION_DAYS = 30
+        old_read = create_notification(employee, notification_document)
+        old_unread = create_notification(
+            employee,
+            notification_document,
+            notification_type=NotificationType.DOCUMENT_APPROVED,
+        )
+        NotificationService.mark_read(old_read)
+        old_date = timezone.now() - timedelta(days=31)
+        Notification.objects.filter(pk__in=[old_read.pk, old_unread.pk]).update(
+            created_at=old_date
+        )
+
+        assert NotificationCleanupService.cleanup() == 1
+        assert not Notification.objects.filter(pk=old_read.pk).exists()
+        assert Notification.objects.filter(pk=old_unread.pk).exists()
+
+    def test_cleanup_task(self, settings):
+        settings.NOTIFICATION_RETENTION_DAYS = 30
+        assert cleanup_old_notifications.run() == 0
 
 
 class TestNotificationIntegrations:

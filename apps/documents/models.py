@@ -31,7 +31,6 @@ class DocumentCategory(UUIDModel, TimeStampedModel, SoftDeleteModel):
         default=DocumentCategoryStatus.ACTIVE,
         db_index=True,
     )
-
     class Meta:
         ordering = ["name"]
         verbose_name = "Категория документов"
@@ -199,6 +198,14 @@ class Document(UUIDModel, SoftDeleteModel):
         choices=DocumentStatus.choices,
         default=DocumentStatus.DRAFT,
         db_index=True,
+    )
+    status_before_overdue = models.CharField(
+        "Статус до просрочки",
+        max_length=20,
+        choices=DocumentStatus.choices,
+        null=True,
+        blank=True,
+        editable=False,
     )
     deadline = models.DateTimeField("Дедлайн", null=True, blank=True, db_index=True)
     submitted_at = models.DateTimeField("Отправлен", null=True, blank=True)

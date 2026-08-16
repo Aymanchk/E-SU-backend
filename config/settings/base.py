@@ -189,7 +189,8 @@ DOCUMENT_NUMBER_FORMAT = env(
 DOCUMENT_NUMBER_PREFIX = env("DOCUMENT_NUMBER_PREFIX", default="ESU")
 DOCUMENT_NUMBER_PADDING = env.int("DOCUMENT_NUMBER_PADDING", default=6)
 NOTIFICATION_EMAIL_ENABLED = env.bool("NOTIFICATION_EMAIL_ENABLED", default=False)
-DEADLINE_SOON_HOURS = env.int("DEADLINE_SOON_HOURS", default=24)
+DEADLINE_APPROACHING_DAYS = env.int("DEADLINE_APPROACHING_DAYS", default=1)
+NOTIFICATION_RETENTION_DAYS = env.int("NOTIFICATION_RETENTION_DAYS", default=90)
 
 
 # ---------------------------------------------------------------------------
@@ -316,10 +317,18 @@ CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 300
 CELERY_TASK_SOFT_TIME_LIMIT = 240
 CELERY_BEAT_SCHEDULE = {
-    "check-document-deadlines-hourly": {
-        "task": "apps.notifications.tasks.check_document_deadlines",
-        "schedule": 3600.0,
-    }
+    "check-upcoming-document-deadlines": {
+        "task": "apps.notifications.tasks.check_upcoming_document_deadlines",
+        "schedule": 1800.0,
+    },
+    "mark-overdue-documents": {
+        "task": "apps.notifications.tasks.mark_overdue_documents",
+        "schedule": 1800.0,
+    },
+    "cleanup-old-notifications": {
+        "task": "apps.notifications.tasks.cleanup_old_notifications",
+        "schedule": 86400.0,
+    },
 }
 
 
