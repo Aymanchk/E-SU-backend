@@ -202,7 +202,15 @@ class DocumentViewSet(viewsets.ModelViewSet):
     }
     filterset_class = DocumentFilter
     search_fields = ["title", "description", "registration_number"]
-    ordering_fields = ["created_at", "deadline", "title", "priority", "status"]
+    ordering_fields = [
+        "created_at",
+        "updated_at",
+        "deadline",
+        "title",
+        "priority",
+        "status",
+        "registration_number",
+    ]
     ordering = ["-created_at"]
     http_method_names = ["get", "post", "patch", "delete", "head", "options"]
 

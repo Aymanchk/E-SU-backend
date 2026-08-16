@@ -1,9 +1,11 @@
 from django.db import transaction
+from django.utils import timezone
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from apps.accounts.models import User, UserStatus
 from apps.accounts.serializers import RoleShortSerializer, UserShortSerializer
+from apps.organizations.models import Department
 from apps.organizations.serializers import DepartmentShortSerializer
 
 from .models import (
@@ -232,6 +234,19 @@ class DocumentDetailSerializer(DocumentListSerializer):
 
 
 class DocumentWriteSerializer(serializers.ModelSerializer):
+    category_id = serializers.PrimaryKeyRelatedField(
+        source="category", queryset=DocumentCategory.objects.all()
+    )
+    department_id = serializers.PrimaryKeyRelatedField(
+        source="department", queryset=Department.objects.all()
+    )
+    responsible_id = serializers.PrimaryKeyRelatedField(
+        source="responsible",
+        queryset=User.objects.all(),
+        allow_null=True,
+        required=False,
+    )
+
     class Meta:
         model = Document
         fields = [
@@ -239,24 +254,56 @@ class DocumentWriteSerializer(serializers.ModelSerializer):
             "title",
             "description",
             "document_type",
-            "category",
-            "department",
-            "responsible",
+            "category_id",
+            "department_id",
+            "responsible_id",
             "priority",
             "deadline",
         ]
         read_only_fields = ["id"]
 
-    def validate_category(self, category):
+    def to_internal_value(self, data):
+        data = data.copy()
+        aliases = {
+            "category": "category_id",
+            "department": "department_id",
+            "responsible": "responsible_id",
+        }
+        for legacy_name, canonical_name in aliases.items():
+            if legacy_name in data and canonical_name in data:
+                if str(data[legacy_name]) != str(data[canonical_name]):
+                    raise serializers.ValidationError(
+                        {canonical_name: f"Нельзя передавать разные {legacy_name} и {canonical_name}"}
+                    )
+            elif legacy_name in data:
+                data[canonical_name] = data[legacy_name]
+        return super().to_internal_value(data)
+
+    def validate_category_id(self, category):
         if category.status != DocumentCategoryStatus.ACTIVE:
             raise serializers.ValidationError("Нельзя выбрать неактивную категорию")
         return category
+
+    def validate_responsible_id(self, responsible):
+        if responsible is not None and (
+            responsible.status != UserStatus.ACTIVE
+            or not responsible.is_active
+            or responsible.is_deleted
+        ):
+            raise serializers.ValidationError("Ответственный пользователь должен быть активен")
+        return responsible
 
     def validate(self, attrs):
         request = self.context["request"]
         user = request.user
         department = attrs.get("department", getattr(self.instance, "department", None))
         category = attrs.get("category", getattr(self.instance, "category", None))
+        deadline = attrs.get("deadline")
+
+        if self.instance is None and deadline and deadline <= timezone.now():
+            raise serializers.ValidationError(
+                {"deadline": "Срок исполнения не может находиться в прошлом"}
+            )
 
         if not user.is_admin_role and department != user.department:
             raise serializers.ValidationError(
