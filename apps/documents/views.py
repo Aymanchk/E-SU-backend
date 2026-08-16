@@ -245,6 +245,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
                 title="Вы назначены ответственным",
                 message=f"Вы назначены ответственным за документ «{document.title}».",
                 document=document,
+                dedupe_key=f"responsible_assigned:{document.id}:{document.responsible_id}",
             )
 
     def perform_update(self, serializer):
@@ -271,6 +272,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
                 title="Вы назначены ответственным",
                 message=f"Вы назначены ответственным за документ «{document.title}».",
                 document=document,
+                dedupe_key=f"responsible_assigned:{document.id}:{document.responsible_id}",
             )
 
     def perform_destroy(self, instance):

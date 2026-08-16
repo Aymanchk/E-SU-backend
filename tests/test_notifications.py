@@ -130,7 +130,9 @@ class TestDeadlineService:
         second = DeadlineService.check(now=now)
         assert first == {"deadline_soon": 1, "overdue": 0}
         assert second == {"deadline_soon": 0, "overdue": 0}
-        assert Notification.objects.filter(type=NotificationType.DEADLINE_SOON).count() == 1
+        assert Notification.objects.filter(
+            type=NotificationType.DEADLINE_APPROACHING
+        ).count() == 1
 
     def test_overdue_changes_allowed_status(self, employee, notification_document):
         now = timezone.now()
@@ -152,6 +154,27 @@ class TestDeadlineService:
         notification_document.refresh_from_db()
         assert notification_document.status == DocumentStatus.IN_REVIEW
         assert Notification.objects.filter(type=NotificationType.DOCUMENT_OVERDUE).exists()
+
+    def test_overdue_notifies_author_and_responsible(
+        self, user_factory, child_department, notification_document
+    ):
+        responsible = user_factory(department=child_department)
+        notification_document.responsible = responsible
+        notification_document.deadline = timezone.now() - timedelta(minutes=1)
+        notification_document.save(update_fields=["responsible", "deadline"])
+
+        DeadlineService.check()
+        DeadlineService.check()
+
+        notifications = Notification.objects.filter(
+            document=notification_document,
+            type=NotificationType.DOCUMENT_OVERDUE,
+        )
+        assert set(notifications.values_list("recipient_id", flat=True)) == {
+            notification_document.author_id,
+            responsible.id,
+        }
+        assert notifications.count() == 2
 
 
 class TestNotificationIntegrations:
@@ -198,3 +221,35 @@ class TestNotificationIntegrations:
         assert Notification.objects.filter(
             recipient=responsible, type=NotificationType.COMMENT_ADDED
         ).exists()
+
+    def test_registration_notifies_author_and_responsible_once(
+        self,
+        admin_client,
+        employee,
+        user_factory,
+        child_department,
+        notification_document,
+    ):
+        responsible = user_factory(department=child_department)
+        notification_document.responsible = responsible
+        notification_document.status = DocumentStatus.APPROVED
+        notification_document.save(update_fields=["responsible", "status"])
+
+        first = admin_client.post(
+            f"/api/documents/{notification_document.id}/register/"
+        )
+        second = admin_client.post(
+            f"/api/documents/{notification_document.id}/register/"
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 400
+        notifications = Notification.objects.filter(
+            document=notification_document,
+            type=NotificationType.DOCUMENT_REGISTERED,
+        )
+        assert set(notifications.values_list("recipient_id", flat=True)) == {
+            employee.id,
+            responsible.id,
+        }
+        assert notifications.count() == 2

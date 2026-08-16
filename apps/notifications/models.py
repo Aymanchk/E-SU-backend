@@ -8,10 +8,11 @@ class NotificationType(models.TextChoices):
     APPROVAL_REQUIRED = "approval_required", "Требуется согласование"
     DOCUMENT_APPROVED = "document_approved", "Документ согласован"
     DOCUMENT_RETURNED = "document_returned", "Документ возвращён"
-    DEADLINE_SOON = "deadline_soon", "Приближается дедлайн"
+    DEADLINE_APPROACHING = "deadline_approaching", "Приближается дедлайн"
     DOCUMENT_OVERDUE = "document_overdue", "Документ просрочен"
     RESPONSIBLE_ASSIGNED = "responsible_assigned", "Назначен ответственный"
     COMMENT_ADDED = "comment_added", "Добавлен комментарий"
+    DOCUMENT_REGISTERED = "document_registered", "Документ зарегистрирован"
     DOCUMENT_ARCHIVED = "document_archived", "Документ архивирован"
 
 

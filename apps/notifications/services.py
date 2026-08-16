@@ -49,8 +49,13 @@ class NotificationService:
     @staticmethod
     def notify_many(recipients, **kwargs) -> list[Notification]:
         unique_recipients = {recipient.id: recipient for recipient in recipients if recipient}
+        dedupe_key = kwargs.pop("dedupe_key", None)
         return [
-            NotificationService.create(recipient=recipient, **kwargs)
+            NotificationService.create(
+                recipient=recipient,
+                dedupe_key=(f"{dedupe_key}:{recipient.id}" if dedupe_key else None),
+                **kwargs,
+            )
             for recipient in unique_recipients.values()
         ]
 
@@ -95,7 +100,7 @@ class DeadlineService:
             existed = Notification.objects.filter(dedupe_key=key).exists()
             NotificationService.create(
                 recipient=document.responsible,
-                notification_type=NotificationType.DEADLINE_SOON,
+                notification_type=NotificationType.DEADLINE_APPROACHING,
                 title="Приближается дедлайн документа",
                 message=f"Срок по документу «{document.title}» скоро истекает.",
                 document=document,
@@ -104,14 +109,16 @@ class DeadlineService:
             upcoming_created += int(not existed)
 
         overdue_created = 0
-        for document in active_documents.filter(deadline__lt=now).select_related("responsible"):
+        for document in active_documents.filter(deadline__lt=now).select_related(
+            "author", "responsible"
+        ):
             key = (
                 f"document_overdue:{document.id}:{document.responsible_id}:"
                 f"{document.deadline.isoformat()}"
             )
-            existed = Notification.objects.filter(dedupe_key=key).exists()
-            NotificationService.create(
-                recipient=document.responsible,
+            existed = Notification.objects.filter(dedupe_key__startswith=f"{key}:").exists()
+            NotificationService.notify_many(
+                [document.author, document.responsible],
                 notification_type=NotificationType.DOCUMENT_OVERDUE,
                 title="Документ просрочен",
                 message=f"Срок по документу «{document.title}» истёк.",

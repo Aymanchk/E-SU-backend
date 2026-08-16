@@ -139,6 +139,7 @@ class DocumentService:
                 title="Документ архивирован",
                 message=f"Документ «{document.title}» перемещён в архив.",
                 document=document,
+                dedupe_key=f"document_archived:{document.id}:{document.archived_at.isoformat()}",
             )
         return document
 
@@ -221,6 +222,17 @@ class RegistrationService:
             old_values={"registration_number": None},
             new_values={"registration_number": document.registration_number},
             description=f"Документ зарегистрирован: {document.registration_number}",
+        )
+        NotificationService.notify_many(
+            [document.author, document.responsible],
+            notification_type=NotificationType.DOCUMENT_REGISTERED,
+            title="Документ зарегистрирован",
+            message=(
+                f"Документ «{document.title}» зарегистрирован под номером "
+                f"{document.registration_number}."
+            ),
+            document=document,
+            dedupe_key=f"document_registered:{document.id}:{document.registration_number}",
         )
         return document
 
@@ -588,6 +600,7 @@ class ApprovalService:
             title="Документ отправлен на согласование",
             message=f"Документ «{document.title}» отправлен по маршруту согласования.",
             document=document,
+            dedupe_key=f"document_submitted:{route.id}:{document.author_id}",
         )
         first_approver = approvers[0]
         NotificationService.create(
@@ -596,6 +609,7 @@ class ApprovalService:
             title="Требуется согласование",
             message=f"Вам назначен документ «{document.title}» на согласование.",
             document=document,
+            dedupe_key=f"approval_required:{route.steps.get(order=1).id}:{first_approver.id}",
         )
         return route
 
@@ -654,6 +668,7 @@ class ApprovalService:
                 title="Требуется согласование",
                 message=f"Вам назначен документ «{document.title}» на согласование.",
                 document=document,
+                dedupe_key=f"approval_required:{next_step.id}:{next_step.approver_id}",
             )
         else:
             route.status = ApprovalRouteStatus.COMPLETED
@@ -676,6 +691,7 @@ class ApprovalService:
                 title="Документ согласован",
                 message=f"Документ «{document.title}» успешно согласован.",
                 document=document,
+                dedupe_key=f"document_approved:{route.id}",
             )
         HistoryService.record(
             document,
@@ -751,6 +767,7 @@ class ApprovalService:
             title="Документ возвращён",
             message=f"Документ «{document.title}» возвращён: {comment}",
             document=document,
+            dedupe_key=f"document_returned:{route.id}:{document.author_id}",
         )
         return route
 
@@ -785,6 +802,7 @@ class CommentService:
             title="Новый комментарий к документу",
             message=f"К документу «{document.title}» добавлен комментарий.",
             document=document,
+            dedupe_key=f"comment_added:{comment.id}",
         )
         return comment
 
