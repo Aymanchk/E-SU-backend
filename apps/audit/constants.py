@@ -40,6 +40,9 @@ class AuditAction(models.TextChoices):
     # Настройки
     SETTINGS_UPDATE = "settings_update", "Изменение системных настроек"
 
+    # Документы
+    DOCUMENT_REGISTER = "document_register", "Регистрация документа"
+
 
 class AuditResult(models.TextChoices):
     SUCCESS = "success", "Успешно"

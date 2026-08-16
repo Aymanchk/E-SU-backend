@@ -8,6 +8,8 @@ from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from apps.accounts.models import User, UserStatus
+from apps.audit.constants import AuditAction
+from apps.audit.services import log_action
 from apps.notifications.models import NotificationType
 from apps.notifications.services import NotificationService
 
@@ -165,10 +167,10 @@ class DocumentService:
 
 class RegistrationService:
     @staticmethod
-    def _locked_counter(category: DocumentCategory, year: int) -> DocumentNumberCounter:
+    def _locked_counter(department, year: int) -> DocumentNumberCounter:
         try:
             return DocumentNumberCounter.objects.select_for_update().get(
-                category=category, year=year
+                department=department, year=year
             )
         except DocumentNumberCounter.DoesNotExist:
             try:
@@ -176,11 +178,11 @@ class RegistrationService:
                 # creates the same unique counter at exactly this moment.
                 with transaction.atomic():
                     return DocumentNumberCounter.objects.create(
-                        category=category, year=year, last_number=0
+                        department=department, year=year, last_number=0
                     )
             except IntegrityError:
                 return DocumentNumberCounter.objects.select_for_update().get(
-                    category=category, year=year
+                    department=department, year=year
                 )
 
     @classmethod
@@ -190,7 +192,9 @@ class RegistrationService:
             raise PermissionDenied("Недостаточно прав для регистрации документа")
 
         document = (
-            Document.objects.select_for_update().select_related("category").get(pk=document.pk)
+            Document.objects.select_for_update()
+            .select_related("category", "department")
+            .get(pk=document.pk)
         )
         if document.registration_number:
             raise ValidationError("Документ уже зарегистрирован")
@@ -198,12 +202,17 @@ class RegistrationService:
             raise ValidationError("Зарегистрировать можно только согласованный документ")
 
         year = timezone.localdate().year
-        counter = cls._locked_counter(document.category, year)
+        counter = cls._locked_counter(document.department, year)
         counter.last_number += 1
         counter.save(update_fields=["last_number", "updated_at"])
 
-        category_code = document.category.code.upper()
-        document.registration_number = f"ESU-{category_code}-{year}-{counter.last_number:06d}"
+        padded_number = str(counter.last_number).zfill(settings.DOCUMENT_NUMBER_PADDING)
+        document.registration_number = settings.DOCUMENT_NUMBER_FORMAT.format(
+            prefix=settings.DOCUMENT_NUMBER_PREFIX,
+            department=document.department.code.upper(),
+            year=year,
+            number=padded_number,
+        )
         document.save(update_fields=["registration_number", "updated_at"])
         HistoryService.record(
             document,
@@ -212,6 +221,17 @@ class RegistrationService:
             old_values={"registration_number": None},
             new_values={"registration_number": document.registration_number},
             description=f"Документ зарегистрирован: {document.registration_number}",
+        )
+        log_action(
+            user=user,
+            action=AuditAction.DOCUMENT_REGISTER,
+            obj=document,
+            description=f"Документ зарегистрирован: {document.registration_number}",
+            metadata={
+                "registration_number": document.registration_number,
+                "department_id": str(document.department_id),
+                "category_id": str(document.category_id),
+            },
         )
         return document
 

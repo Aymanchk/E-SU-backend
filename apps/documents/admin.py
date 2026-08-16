@@ -46,10 +46,16 @@ class DocumentAdmin(admin.ModelAdmin):
 
 @admin.register(DocumentNumberCounter)
 class DocumentNumberCounterAdmin(admin.ModelAdmin):
-    list_display = ("category", "year", "last_number", "updated_at")
+    list_display = ("department", "year", "last_number", "updated_at")
     list_filter = ("year",)
-    search_fields = ("category__name", "category__code")
-    readonly_fields = ("category", "year", "last_number", "updated_at")
+    search_fields = ("department__name", "department__code")
+    readonly_fields = (
+        "department",
+        "category",
+        "year",
+        "last_number",
+        "updated_at",
+    )
 
 
 @admin.register(DocumentFile)

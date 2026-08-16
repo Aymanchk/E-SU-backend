@@ -232,6 +232,16 @@ class DocumentNumberCounter(models.Model):
         on_delete=models.PROTECT,
         related_name="number_counters",
         verbose_name="Категория",
+        null=True,
+        blank=True,
+    )
+    department = models.ForeignKey(
+        "organizations.Department",
+        on_delete=models.PROTECT,
+        related_name="document_number_counters",
+        verbose_name="Подразделение",
+        null=True,
+        blank=True,
     )
     year = models.PositiveSmallIntegerField("Год")
     last_number = models.PositiveIntegerField("Последний номер", default=0)
@@ -242,12 +252,15 @@ class DocumentNumberCounter(models.Model):
         verbose_name_plural = "Счётчики номеров документов"
         constraints = [
             models.UniqueConstraint(
-                fields=["category", "year"], name="unique_document_counter_category_year"
+                fields=["department", "year"],
+                condition=Q(department__isnull=False),
+                name="unique_document_counter_department_year",
             )
         ]
 
     def __str__(self):
-        return f"{self.category.code}:{self.year}:{self.last_number}"
+        owner = self.department or self.category
+        return f"{owner}:{self.year}:{self.last_number}"
 
 
 def document_file_upload_path(instance, filename):
