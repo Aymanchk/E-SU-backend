@@ -517,6 +517,9 @@ class DocumentHistoryAction(models.TextChoices):
     UPDATED = "updated", "Редактирование"
     FILE_UPLOADED = "file_uploaded", "Загрузка файла"
     FILE_DELETED = "file_deleted", "Удаление файла"
+    COMMENT_ADDED = "comment_added", "Добавление комментария"
+    COMMENT_UPDATED = "comment_updated", "Редактирование комментария"
+    COMMENT_DELETED = "comment_deleted", "Удаление комментария"
     SUBMITTED = "submitted", "Отправка на согласование"
     APPROVED = "approved", "Согласование"
     RETURNED = "returned", "Возврат"
@@ -557,3 +560,11 @@ class DocumentHistory(UUIDModel):
 
     def __str__(self):
         return f"{self.document}: {self.action}"
+
+    def save(self, *args, **kwargs):
+        if self.pk and DocumentHistory.objects.filter(pk=self.pk).exists():
+            raise ValueError("Записи истории документа нельзя изменять")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("Записи истории документа нельзя удалять")

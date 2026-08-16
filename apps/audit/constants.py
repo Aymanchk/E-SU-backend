@@ -41,6 +41,7 @@ class AuditAction(models.TextChoices):
     SETTINGS_UPDATE = "settings_update", "Изменение системных настроек"
 
     # Документы
+    DOCUMENT_ACTION = "document_action", "Действие с документом"
     DOCUMENT_REGISTER = "document_register", "Регистрация документа"
 
 

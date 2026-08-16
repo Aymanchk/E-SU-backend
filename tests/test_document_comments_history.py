@@ -1,6 +1,8 @@
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 
+from apps.audit.constants import AuditAction
+from apps.audit.models import AuditLog
 from apps.documents.models import (
     Document,
     DocumentCategory,
@@ -68,6 +70,13 @@ class TestDocumentComments:
         deleted = employee_client.delete(f"/api/v1/comments/{comment_id}/")
         assert deleted.status_code == 204
         assert not DocumentComment.objects.filter(pk=comment_id).exists()
+        entries = DocumentHistory.objects.filter(document=history_document)
+        assert list(entries.values_list("action", flat=True)) == [
+            DocumentHistoryAction.COMMENT_ADDED,
+            DocumentHistoryAction.COMMENT_UPDATED,
+            DocumentHistoryAction.COMMENT_DELETED,
+        ]
+        assert entries.last().old_values["text"] == "Исправлено"
 
     def test_empty_comment_rejected(self, employee_client, history_document):
         response = employee_client.post(
@@ -245,3 +254,33 @@ class TestDocumentHistory:
             ).status_code
             == 405
         )
+
+    def test_history_records_are_immutable(self, history_document, employee):
+        entry = DocumentHistory.objects.create(
+            document=history_document,
+            user=employee,
+            action=DocumentHistoryAction.CREATED,
+        )
+        entry.description = "Подмена"
+        with pytest.raises(ValueError, match="нельзя изменять"):
+            entry.save()
+        with pytest.raises(ValueError, match="нельзя удалять"):
+            entry.delete()
+
+    def test_document_history_is_mirrored_to_audit(
+        self, employee_client, history_document
+    ):
+        response = employee_client.post(
+            f"/api/v1/documents/{history_document.id}/comments/",
+            {"text": "Аудируемый комментарий"},
+            format="json",
+        )
+        assert response.status_code == 201
+
+        log = AuditLog.objects.get(
+            action=AuditAction.DOCUMENT_ACTION,
+            object_id=str(history_document.id),
+        )
+        assert log.user == history_document.author
+        assert log.metadata["document_action"] == DocumentHistoryAction.COMMENT_ADDED
+        assert log.metadata["new_values"]["text"] == "Аудируемый комментарий"

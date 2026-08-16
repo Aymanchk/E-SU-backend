@@ -222,17 +222,6 @@ class RegistrationService:
             new_values={"registration_number": document.registration_number},
             description=f"Документ зарегистрирован: {document.registration_number}",
         )
-        log_action(
-            user=user,
-            action=AuditAction.DOCUMENT_REGISTER,
-            obj=document,
-            description=f"Документ зарегистрирован: {document.registration_number}",
-            metadata={
-                "registration_number": document.registration_number,
-                "department_id": str(document.department_id),
-                "category_id": str(document.category_id),
-            },
-        )
         return document
 
 
@@ -778,6 +767,13 @@ class CommentService:
             text=text,
             comment_type=DocumentCommentType.GENERAL,
         )
+        HistoryService.record(
+            document,
+            user,
+            DocumentHistoryAction.COMMENT_ADDED,
+            new_values={"comment_id": comment.id, "text": comment.text},
+            description="Добавлен комментарий",
+        )
         recipients = [
             recipient
             for recipient in [document.author, document.responsible]
@@ -804,15 +800,37 @@ class CommentService:
     @classmethod
     @transaction.atomic
     def update(cls, comment: DocumentComment, user, text: str) -> DocumentComment:
+        comment = DocumentComment.objects.select_for_update().select_related("document").get(
+            pk=comment.pk
+        )
         cls.ensure_editable(comment, user)
+        old_text = comment.text
         comment.text = text
         comment.save(update_fields=["text", "updated_at"])
+        HistoryService.record(
+            comment.document,
+            user,
+            DocumentHistoryAction.COMMENT_UPDATED,
+            old_values={"comment_id": comment.id, "text": old_text},
+            new_values={"comment_id": comment.id, "text": comment.text},
+            description="Комментарий отредактирован",
+        )
         return comment
 
     @classmethod
     @transaction.atomic
     def delete(cls, comment: DocumentComment, user) -> None:
+        comment = DocumentComment.objects.select_for_update().select_related("document").get(
+            pk=comment.pk
+        )
         cls.ensure_editable(comment, user)
+        HistoryService.record(
+            comment.document,
+            user,
+            DocumentHistoryAction.COMMENT_DELETED,
+            old_values={"comment_id": comment.id, "text": comment.text},
+            description="Комментарий удалён",
+        )
         comment.delete()
 
 
@@ -860,14 +878,34 @@ class HistoryService:
         new_values=None,
         description="",
     ) -> DocumentHistory:
-        return DocumentHistory.objects.create(
+        normalized_old_values = cls.normalize_mapping(old_values)
+        normalized_new_values = cls.normalize_mapping(new_values)
+        entry = DocumentHistory.objects.create(
             document=document,
             user=user,
             action=action,
-            old_values=cls.normalize_mapping(old_values),
-            new_values=cls.normalize_mapping(new_values),
+            old_values=normalized_old_values,
+            new_values=normalized_new_values,
             description=description,
         )
+        log_action(
+            user=user,
+            action=(
+                AuditAction.DOCUMENT_REGISTER
+                if action == DocumentHistoryAction.REGISTERED
+                else AuditAction.DOCUMENT_ACTION
+            ),
+            obj=document,
+            description=description,
+            metadata={
+                "history_id": str(entry.id),
+                "document_action": action,
+                "old_values": normalized_old_values,
+                "new_values": normalized_new_values,
+                **normalized_new_values,
+            },
+        )
+        return entry
 
 
 class DashboardService:
