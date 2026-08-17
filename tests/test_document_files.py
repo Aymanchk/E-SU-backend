@@ -12,6 +12,7 @@ pytestmark = pytest.mark.django_db
 def local_file_storage(settings, tmp_path):
     settings.MEDIA_ROOT = tmp_path
     settings.MAX_DOCUMENT_FILE_SIZE = 1024
+    settings.MAX_DOCUMENT_FILES = 10
     settings.STORAGES = {
         "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
         "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
@@ -130,6 +131,24 @@ class TestDocumentFileUpload:
         )
         assert response.status_code == 400
 
+    def test_file_count_limit(self, settings, employee_client, document):
+        settings.MAX_DOCUMENT_FILES = 2
+        for name in ("first.pdf", "second.pdf"):
+            response = employee_client.post(
+                f"/api/documents/{document.id}/files/",
+                {"file": upload(name)},
+                format="multipart",
+            )
+            assert response.status_code == 201
+
+        response = employee_client.post(
+            f"/api/documents/{document.id}/files/",
+            {"file": upload("third.pdf")},
+            format="multipart",
+        )
+        assert response.status_code == 400
+        assert DocumentFile.objects.filter(document=document).count() == 2
+
 
 class TestDocumentFileDownloadAndDelete:
     @pytest.fixture
@@ -177,3 +196,66 @@ class TestDocumentFileDownloadAndDelete:
         response = employee_client.delete(f"/api/v1/document-files/{document_file.id}/")
         assert response.status_code == 400
         assert DocumentFile.objects.filter(pk=document_file.pk).exists()
+
+    def test_make_main(self, employee_client, document, document_file):
+        employee_client.post(
+            f"/api/documents/{document.id}/files/",
+            {"file": upload("second.pdf")},
+            format="multipart",
+        )
+        second = DocumentFile.objects.get(original_name="second.pdf")
+
+        response = employee_client.post(
+            f"/api/document-files/{second.id}/make-main/"
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["is_main"] is True
+        assert DocumentFile.objects.filter(document=document, is_main=True).count() == 1
+        assert DocumentFile.objects.get(is_main=True) == second
+
+    def test_make_main_blocked_after_submit(
+        self, employee_client, document, document_file, manager
+    ):
+        employee_client.post(
+            f"/api/documents/{document.id}/files/",
+            {"file": upload("second.pdf")},
+            format="multipart",
+        )
+        second = DocumentFile.objects.get(original_name="second.pdf")
+        employee_client.post(
+            f"/api/documents/{document.id}/submit/",
+            {"approvers": [str(manager.id)]},
+            format="json",
+        )
+
+        response = employee_client.post(
+            f"/api/document-files/{second.id}/make-main/"
+        )
+
+        assert response.status_code == 400
+        document_file.refresh_from_db()
+        assert document_file.is_main is True
+
+    def test_delete_main_promotes_oldest_remaining_file(
+        self,
+        employee_client,
+        document,
+        document_file,
+        django_capture_on_commit_callbacks,
+    ):
+        employee_client.post(
+            f"/api/documents/{document.id}/files/",
+            {"file": upload("second.pdf")},
+            format="multipart",
+        )
+        second = DocumentFile.objects.get(original_name="second.pdf")
+
+        with django_capture_on_commit_callbacks(execute=True):
+            response = employee_client.delete(
+                f"/api/document-files/{document_file.id}/"
+            )
+
+        assert response.status_code == 204
+        second.refresh_from_db()
+        assert second.is_main is True

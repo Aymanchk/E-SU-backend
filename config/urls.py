@@ -14,6 +14,7 @@ from apps.common.views import HealthView
 # /api/v1/ (канонический) и под старым /api/ ради обратной совместимости.
 # Views и serializers не дублируются — переиспользуются одни и те же URL-модули.
 api_patterns = [
+    path("health/", HealthView.as_view(), name="health"),
     path("auth/", include("apps.accounts.urls_auth")),
     path("", include("apps.accounts.urls")),
     path("", include("apps.organizations.urls")),

@@ -38,7 +38,7 @@ class HasPermissionPerAction(BasePermission):
                 "retrieve": None,      # None означает "любому авторизованному"
             }
 
-    Если действия нет в словаре, доступ разрешён авторизованному пользователю.
+    Если действия нет в словаре, доступ запрещён (deny by default).
     """
 
     message = "Недостаточно прав для выполнения действия"
@@ -51,8 +51,11 @@ class HasPermissionPerAction(BasePermission):
         permission_map = getattr(view, "permission_map", {})
         action = getattr(view, "action", None)
 
-        if action not in permission_map:
+        # Let DRF return 405 for an HTTP method that is not mapped to any action.
+        if action is None:
             return True
+        if action not in permission_map:
+            return False
 
         required = permission_map[action]
         if required is None:

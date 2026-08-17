@@ -5,7 +5,11 @@ from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 
 from .models import Notification
-from .services import DeadlineService
+from .services import (
+    NotificationCleanupService,
+    OverdueDocumentService,
+    UpcomingDeadlineService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,5 +38,15 @@ def send_notification_email(self, notification_id):
 
 
 @shared_task
-def check_document_deadlines():
-    return DeadlineService.check()
+def check_upcoming_document_deadlines():
+    return UpcomingDeadlineService.check()
+
+
+@shared_task
+def mark_overdue_documents():
+    return OverdueDocumentService.mark()
+
+
+@shared_task
+def cleanup_old_notifications():
+    return NotificationCleanupService.cleanup()

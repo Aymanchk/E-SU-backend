@@ -17,6 +17,7 @@ class DocumentCategory(UUIDModel, TimeStampedModel, SoftDeleteModel):
     code = models.SlugField("Код", max_length=50, unique=True, db_index=True)
     description = models.TextField("Описание", blank=True)
     retention_period_days = models.PositiveIntegerField("Срок хранения (дней)")
+    requires_file = models.BooleanField("Обязательный файл", default=False)
     allowed_departments = models.ManyToManyField(
         "organizations.Department",
         blank=True,
@@ -30,7 +31,6 @@ class DocumentCategory(UUIDModel, TimeStampedModel, SoftDeleteModel):
         default=DocumentCategoryStatus.ACTIVE,
         db_index=True,
     )
-
     class Meta:
         ordering = ["name"]
         verbose_name = "Категория документов"
@@ -38,6 +38,96 @@ class DocumentCategory(UUIDModel, TimeStampedModel, SoftDeleteModel):
 
     def __str__(self):
         return self.name
+
+
+class ApprovalTemplateApproverType(models.TextChoices):
+    SPECIFIC_USER = "specific_user", "Конкретный пользователь"
+    ROLE = "role", "Роль"
+    DEPARTMENT_MANAGER = "department_manager", "Руководитель подразделения"
+    DOCUMENT_RESPONSIBLE = "document_responsible", "Ответственный за документ"
+
+
+class ApprovalTemplateDepartmentRelation(models.TextChoices):
+    AUTHOR_DEPARTMENT = "author_department", "Подразделение автора"
+    DOCUMENT_DEPARTMENT = "document_department", "Подразделение документа"
+
+
+class ApprovalRouteTemplate(UUIDModel, TimeStampedModel):
+    category = models.ForeignKey(
+        DocumentCategory,
+        on_delete=models.CASCADE,
+        related_name="approval_route_templates",
+        verbose_name="Категория",
+    )
+    name = models.CharField("Название", max_length=200)
+    is_active = models.BooleanField("Активен", default=True, db_index=True)
+
+    class Meta:
+        ordering = ["category", "name"]
+        verbose_name = "Шаблон маршрута согласования"
+        verbose_name_plural = "Шаблоны маршрутов согласования"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["category"],
+                condition=Q(is_active=True),
+                name="unique_active_route_template_category",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.category}: {self.name}"
+
+
+class ApprovalRouteTemplateStep(UUIDModel):
+    template = models.ForeignKey(
+        ApprovalRouteTemplate,
+        on_delete=models.CASCADE,
+        related_name="steps",
+        verbose_name="Шаблон",
+    )
+    order = models.PositiveIntegerField("Порядок")
+    approver_type = models.CharField(
+        "Тип согласующего",
+        max_length=30,
+        choices=ApprovalTemplateApproverType.choices,
+    )
+    role = models.ForeignKey(
+        "accounts.Role",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="approval_template_steps",
+        verbose_name="Роль",
+    )
+    specific_user = models.ForeignKey(
+        "accounts.User",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="approval_template_steps",
+        verbose_name="Конкретный пользователь",
+    )
+    department_relation = models.CharField(
+        "Связь с подразделением",
+        max_length=30,
+        choices=ApprovalTemplateDepartmentRelation.choices,
+        blank=True,
+    )
+    is_required = models.BooleanField("Обязательный шаг", default=True)
+
+    class Meta:
+        ordering = ["order"]
+        verbose_name = "Шаг шаблона согласования"
+        verbose_name_plural = "Шаги шаблона согласования"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["template", "order"],
+                name="unique_route_template_step_order",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.template}: {self.order}"
 
 
 class DocumentPriority(models.TextChoices):
@@ -109,6 +199,14 @@ class Document(UUIDModel, SoftDeleteModel):
         default=DocumentStatus.DRAFT,
         db_index=True,
     )
+    status_before_overdue = models.CharField(
+        "Статус до просрочки",
+        max_length=20,
+        choices=DocumentStatus.choices,
+        null=True,
+        blank=True,
+        editable=False,
+    )
     deadline = models.DateTimeField("Дедлайн", null=True, blank=True, db_index=True)
     submitted_at = models.DateTimeField("Отправлен", null=True, blank=True)
     approved_at = models.DateTimeField("Согласован", null=True, blank=True)
@@ -129,6 +227,15 @@ class Document(UUIDModel, SoftDeleteModel):
             models.Index(fields=["department", "status"]),
             models.Index(fields=["responsible", "status"]),
             models.Index(fields=["category", "status"]),
+            models.Index(
+                fields=["status", "deadline"], name="doc_status_deadline_idx"
+            ),
+            models.Index(
+                fields=["status", "created_at"], name="doc_status_created_idx"
+            ),
+            models.Index(
+                fields=["author", "created_at"], name="doc_author_created_idx"
+            ),
         ]
 
     def __str__(self):
@@ -141,6 +248,16 @@ class DocumentNumberCounter(models.Model):
         on_delete=models.PROTECT,
         related_name="number_counters",
         verbose_name="Категория",
+        null=True,
+        blank=True,
+    )
+    department = models.ForeignKey(
+        "organizations.Department",
+        on_delete=models.PROTECT,
+        related_name="document_number_counters",
+        verbose_name="Подразделение",
+        null=True,
+        blank=True,
     )
     year = models.PositiveSmallIntegerField("Год")
     last_number = models.PositiveIntegerField("Последний номер", default=0)
@@ -151,12 +268,15 @@ class DocumentNumberCounter(models.Model):
         verbose_name_plural = "Счётчики номеров документов"
         constraints = [
             models.UniqueConstraint(
-                fields=["category", "year"], name="unique_document_counter_category_year"
+                fields=["department", "year"],
+                condition=Q(department__isnull=False),
+                name="unique_document_counter_department_year",
             )
         ]
 
     def __str__(self):
-        return f"{self.category.code}:{self.year}:{self.last_number}"
+        owner = self.department or self.category
+        return f"{owner}:{self.year}:{self.last_number}"
 
 
 def document_file_upload_path(instance, filename):
@@ -209,6 +329,11 @@ class ApprovalRouteStatus(models.TextChoices):
     CANCELLED = "cancelled", "Отменён"
 
 
+class ApprovalRouteSource(models.TextChoices):
+    MANUAL = "manual", "Ручной маршрут"
+    CATEGORY_TEMPLATE = "category_template", "Шаблон категории"
+
+
 class ApprovalStepStatus(models.TextChoices):
     PENDING = "pending", "Ожидает"
     CURRENT = "current", "Текущий"
@@ -235,6 +360,23 @@ class ApprovalRoute(UUIDModel):
         choices=ApprovalRouteStatus.choices,
         default=ApprovalRouteStatus.ACTIVE,
         db_index=True,
+    )
+    source = models.CharField(
+        "Источник маршрута",
+        max_length=30,
+        choices=ApprovalRouteSource.choices,
+        default=ApprovalRouteSource.MANUAL,
+    )
+    template = models.ForeignKey(
+        ApprovalRouteTemplate,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="approval_routes",
+        verbose_name="Исходный шаблон",
+    )
+    template_snapshot = models.JSONField(
+        "Снимок шаблона", default=dict, blank=True
     )
     created_by = models.ForeignKey(
         "accounts.User",
@@ -391,6 +533,9 @@ class DocumentHistoryAction(models.TextChoices):
     UPDATED = "updated", "Редактирование"
     FILE_UPLOADED = "file_uploaded", "Загрузка файла"
     FILE_DELETED = "file_deleted", "Удаление файла"
+    COMMENT_ADDED = "comment_added", "Добавление комментария"
+    COMMENT_UPDATED = "comment_updated", "Редактирование комментария"
+    COMMENT_DELETED = "comment_deleted", "Удаление комментария"
     SUBMITTED = "submitted", "Отправка на согласование"
     APPROVED = "approved", "Согласование"
     RETURNED = "returned", "Возврат"
@@ -431,3 +576,11 @@ class DocumentHistory(UUIDModel):
 
     def __str__(self):
         return f"{self.document}: {self.action}"
+
+    def save(self, *args, **kwargs):
+        if self.pk and DocumentHistory.objects.filter(pk=self.pk).exists():
+            raise ValueError("Записи истории документа нельзя изменять")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("Записи истории документа нельзя удалять")

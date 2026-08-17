@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Frontend API Contract — E-SU
 
 Контракт между backend и frontend E-SU. Все основные эндпоинты подключены под
@@ -24,22 +25,59 @@
 ```json
 {
   "data": { "count": 100, "next": null, "previous": null, "results": [] },
+=======
+# E-SU Frontend API Contract
+
+Актуальный контракт backend документооборота. Канонический префикс: `/api/v1`.
+Маршруты без `/v1` временно оставлены для совместимости и не должны использоваться новым frontend.
+
+Интерактивная документация локально:
+
+- Swagger UI: `/api/docs/`
+- ReDoc: `/api/redoc/`
+- OpenAPI schema: `/api/schema/`
+
+## Общие правила
+
+Все защищённые запросы используют JWT:
+
+```http
+Authorization: Bearer <access_token>
+```
+
+Успешный JSON-ответ:
+
+```json
+{
+  "data": {},
+>>>>>>> 62d5b43 (docs: add frontend api contract)
   "message": "Success"
 }
 ```
 
+<<<<<<< HEAD
 **Ошибка:**
+=======
+Ошибка:
+>>>>>>> 62d5b43 (docs: add frontend api contract)
 
 ```json
 {
   "error": {
     "code": "validation_error",
     "message": "Некорректные данные",
+<<<<<<< HEAD
     "details": { "email": ["Обязательное поле."] }
+=======
+    "details": {
+      "title": ["Обязательное поле."]
+    }
+>>>>>>> 62d5b43 (docs: add frontend api contract)
   }
 }
 ```
 
+<<<<<<< HEAD
 **Коды ошибок** обрабатываются единообразно: `400, 401, 403, 404, 405, 409, 413, 429, 500`.
 Traceback в production не возвращается.
 
@@ -110,3 +148,257 @@ Traceback в production не возвращается.
 - **Список permissions для таблицы-чекбоксов** отдаёт `GET /api/v1/permissions/`
   (сгруппирован по `group`). Подробнее — [PERMISSIONS.md](PERMISSIONS.md).
 - Swagger содержит примеры request/response для основных операций.
+=======
+Основные коды: `validation_error`, `not_authenticated`, `permission_denied`,
+`not_found`, `method_not_allowed`, `conflict`, `invalid_document_transition`.
+Запрос чужого недоступного UUID возвращает `404` без раскрытия объекта.
+
+Пагинация списков:
+
+```json
+{
+  "data": {
+    "count": 42,
+    "next": "http://localhost:8000/api/v1/documents/?page=2",
+    "previous": null,
+    "results": []
+  },
+  "message": "Success"
+}
+```
+
+Параметры: `page` и `page_size`; размер по умолчанию 20, максимум 100.
+
+## Статусы документа
+
+| Код | Значение |
+|---|---|
+| `draft` | Черновик |
+| `in_review` | На согласовании |
+| `returned` | Возвращён автору |
+| `approved` | Согласован |
+| `completed` | Завершён |
+| `overdue` | Просрочен |
+| `archived` | В архиве |
+
+Основной workflow:
+
+```text
+draft -> in_review -> approved -> completed -> archived
+            |                         ^           |
+            -> returned -> in_review  |-----------|
+```
+
+`overdue` назначается фоновой задачей только разрешённым бизнес-статусам;
+предыдущий статус хранится в `status_before_overdue`.
+
+## Документы
+
+### CRUD и списки
+
+| Метод и endpoint | Permission | Допустимый статус / примечание |
+|---|---|---|
+| `GET /documents/` | `documents.view` | Только доступные пользователю объекты |
+| `POST /documents/` | `documents.create` | Создаёт `draft`, автор берётся из JWT |
+| `GET /documents/{id}/` | `documents.view` + object access | Любой видимый статус |
+| `PATCH /documents/{id}/` | `documents.create` + автор/admin | Только `draft`, `returned` |
+| `DELETE /documents/{id}/` | `documents.create` + автор/admin | Только `draft`, soft delete |
+| `GET /documents/my/` | `documents.view` | Документы текущего автора |
+| `GET /documents/for-approval/` | `documents.approve` | Только текущий шаг пользователя |
+| `GET /documents/returned/` | `documents.view` | Возвращённые документы автора |
+| `GET /documents/overdue/` | `documents.view` | Видимые просроченные документы |
+| `GET /documents/archive/` | `documents.view` | Видимые архивные документы |
+
+Создание и редактирование:
+
+```json
+{
+  "title": "Приказ о назначении",
+  "description": "Описание документа",
+  "document_type": "order",
+  "category_id": "8e17b9ef-8ff6-44e9-96aa-e0a672a57a8a",
+  "department_id": "48d741a1-3ca9-4db9-bcbf-7405360f49dd",
+  "responsible_id": "e3634ec5-2155-40f6-bff6-5bca8c77ff07",
+  "priority": "normal",
+  "deadline": "2026-08-20T12:00:00+06:00"
+}
+```
+
+`category`, `department`, `responsible` временно принимаются как legacy aliases,
+но frontend должен отправлять поля с суффиксом `_id`.
+`registration_number`, `author`, `status` и служебные даты через PATCH не меняются.
+
+Валидация:
+
+- категория активна и разрешена подразделению;
+- ответственный активен;
+- deadline при создании находится в будущем;
+- обычный пользователь создаёт документ только в своём подразделении;
+- редактирование заблокировано во время и после согласования.
+
+Фильтры всех основных и специальных списков:
+
+- `search` — title, description, registration number;
+- `status`, `category`, `department`, `author`, `responsible`, `priority`;
+- `created_from`, `created_to`, `deadline_from`, `deadline_to` — ISO 8601;
+- `ordering` — `created_at`, `updated_at`, `deadline`, `title`, `priority`,
+  `status`, `registration_number`; префикс `-` задаёт обратный порядок;
+- `page`, `page_size`.
+
+Пример:
+
+```http
+GET /api/v1/documents/my/?status=draft&search=приказ&ordering=-created_at&page_size=20
+```
+
+### Workflow actions
+
+| Метод и endpoint | Permission | Переход |
+|---|---|---|
+| `POST /documents/{id}/submit/` | `documents.create`, автор/admin | `draft/returned -> in_review` |
+| `GET /documents/{id}/approval/` | `documents.view` | Текущий/последний маршрут |
+| `POST /documents/{id}/approve/` | `documents.approve`, current approver | Следующий шаг или `approved` |
+| `POST /documents/{id}/return/` | `documents.return`, current approver | `in_review -> returned` |
+| `POST /documents/{id}/register/` | `documents.register` | Только `approved` |
+| `POST /documents/{id}/complete/` | `documents.edit/create` + object rule | `approved -> completed` |
+| `POST /documents/{id}/archive/` | `documents.archive` | `completed -> archived` |
+| `POST /documents/{id}/restore/` | `documents.archive` | `archived -> completed` |
+
+Ручной маршрут submit:
+
+```json
+{
+  "approvers": [
+    "82baa628-9085-40ec-a502-50d4c0473439",
+    "a8346334-08bb-460c-8615-f8d9926ba39a"
+  ]
+}
+```
+
+Если `approvers` отсутствует или пуст, используется активный шаблон категории.
+Ручной непустой список имеет приоритет. Повторы и неактивные пользователи запрещены.
+
+Approve допускает необязательный комментарий:
+
+```json
+{"comment": "Согласовано"}
+```
+
+Return требует непустую причину:
+
+```json
+{"comment": "Исправьте реквизиты"}
+```
+
+Неверный переход возвращает:
+
+```json
+{
+  "error": {
+    "code": "invalid_document_transition",
+    "message": "Документ нельзя архивировать из текущего статуса",
+    "details": {
+      "current_status": "draft",
+      "requested_action": "archive"
+    }
+  }
+}
+```
+
+## Файлы
+
+| Метод и endpoint | Правило |
+|---|---|
+| `GET /documents/{id}/files/` | Object access к документу |
+| `POST /documents/{id}/files/` | Автор/admin, только `draft/returned` |
+| `GET /document-files/{id}/download/` | Object access, иначе `404` |
+| `DELETE /document-files/{id}/` | Автор/admin, только `draft/returned` |
+| `POST /document-files/{id}/make-main/` | Автор/admin, только `draft/returned` |
+
+Upload использует только `multipart/form-data`:
+
+```text
+file: <binary>
+is_main: true|false
+```
+
+Разрешены PDF, DOC, DOCX, XLSX, PNG, JPG/JPEG. Проверяются расширение, MIME,
+сигнатура содержимого, непустой размер, лимит размера и количество файлов.
+Имя в storage генерируется backend. Основной файл у документа только один.
+
+## Комментарии и история
+
+| Метод и endpoint | Правило |
+|---|---|
+| `GET /documents/{id}/comments/` | Только участники с object access |
+| `POST /documents/{id}/comments/` | Object access; архив read-only |
+| `PATCH /comments/{id}/` | Только автор обычного комментария |
+| `DELETE /comments/{id}/` | Только автор обычного комментария |
+| `GET /documents/{id}/history/` | Object access, строго read-only |
+
+Создание комментария:
+
+```json
+{"text": "Комментарий к документу"}
+```
+
+`author` и `comment_type` задаёт backend. Служебные approval/return/system
+комментарии неизменяемы. История возвращается хронологически и содержит actor,
+action, description, old/new values и created_at.
+
+## Категории и шаблоны маршрутов
+
+Категории: `/document-categories/`, CRUD плюс `/{id}/activate/` и
+`/{id}/deactivate/`. Изменения требуют `categories.manage`.
+
+Шаблоны: `/approval-route-templates/`. Поддерживаются `specific_user`, `role`,
+`department_manager`, `document_responsible`. Активный шаблон категории один;
+созданный маршрут хранит неизменяемый snapshot.
+
+## Уведомления
+
+- `GET /notifications/`
+- `GET /notifications/unread-count/`
+- `POST /notifications/{id}/read/`
+- `POST /notifications/read-all/`
+
+Доступны только уведомления текущего пользователя. Фильтры списка: `type`,
+`is_read`, `document`; ordering — `created_at`.
+
+Типы: `document_submitted`, `document_approved`, `document_returned`,
+`deadline_approaching`, `document_overdue`, `responsible_assigned`,
+`comment_added`, `approval_required`, `document_registered`, `document_archived`.
+
+## Dashboard
+
+`GET /dashboard/` возвращает данные с учётом object-level access:
+
+```json
+{
+  "data": {
+    "counters": {
+      "all": 20,
+      "my": 8,
+      "for_approval": 3,
+      "returned": 2,
+      "overdue": 1,
+      "archived": 6
+    },
+    "recent_documents": [],
+    "approval_documents": [],
+    "recent_notifications": [],
+    "quick_actions": []
+  },
+  "message": "Success"
+}
+```
+
+## Интеграционные замечания
+
+- UUID передаются строками.
+- Все даты — ISO 8601 с timezone; backend работает в `Asia/Bishkek`.
+- После мутаций frontend должен использовать статус из ответа, а не вычислять его локально.
+- `204 No Content` не содержит envelope/body.
+- Не показывайте пользователю действия только по роли: используйте permissions профиля,
+  а окончательное решение всегда остаётся за backend object-level проверкой.
+>>>>>>> 62d5b43 (docs: add frontend api contract)

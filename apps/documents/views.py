@@ -1,6 +1,7 @@
+from django.db.models import Count, Q
 from django.http import FileResponse
 from drf_spectacular.utils import extend_schema, extend_schema_view
-from rest_framework import mixins, status, viewsets
+from rest_framework import mixins, parsers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -10,8 +11,10 @@ from apps.common.permissions import HasPermissionPerAction
 from apps.notifications.models import NotificationType
 from apps.notifications.services import NotificationService
 
+from .access import DocumentAccessService
 from .filters import DocumentCategoryFilter, DocumentFilter
 from .models import (
+    ApprovalRouteTemplate,
     ApprovalStep,
     ApprovalStepStatus,
     Document,
@@ -24,6 +27,7 @@ from .serializers import (
     ApprovalDecisionSerializer,
     ApprovalReturnSerializer,
     ApprovalRouteSerializer,
+    ApprovalRouteTemplateSerializer,
     DashboardSerializer,
     DocumentCategorySerializer,
     DocumentCommentCreateSerializer,
@@ -90,7 +94,18 @@ class DocumentCategoryViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return (
             DocumentCategory.objects.select_related("created_by")
-            .prefetch_related("allowed_departments")
+            .prefetch_related(
+                "allowed_departments",
+                "approval_route_templates__steps__role",
+                "approval_route_templates__steps__specific_user",
+            )
+            .annotate(
+                document_count=Count(
+                    "documents",
+                    filter=Q(documents__is_deleted=False),
+                    distinct=True,
+                )
+            )
             .distinct()
         )
 
@@ -117,6 +132,41 @@ class DocumentCategoryViewSet(viewsets.ModelViewSet):
 
 
 @extend_schema_view(
+    list=extend_schema(summary="Список шаблонов маршрутов", tags=["Approval templates"]),
+    retrieve=extend_schema(summary="Шаблон маршрута", tags=["Approval templates"]),
+    create=extend_schema(summary="Создать шаблон маршрута", tags=["Approval templates"]),
+    partial_update=extend_schema(summary="Изменить шаблон маршрута", tags=["Approval templates"]),
+    destroy=extend_schema(summary="Удалить шаблон маршрута", tags=["Approval templates"]),
+)
+class ApprovalRouteTemplateViewSet(viewsets.ModelViewSet):
+    serializer_class = ApprovalRouteTemplateSerializer
+    permission_classes = [IsAuthenticated, HasPermissionPerAction]
+    permission_map = {
+        "list": "categories.manage",
+        "retrieve": "categories.manage",
+        "create": "categories.manage",
+        "update": "categories.manage",
+        "partial_update": "categories.manage",
+        "destroy": "categories.manage",
+    }
+    filterset_fields = ["category", "is_active"]
+    ordering_fields = ["name", "created_at", "updated_at"]
+    ordering = ["category__name", "name"]
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
+
+    def get_queryset(self):
+        return ApprovalRouteTemplate.objects.select_related("category").prefetch_related(
+            "steps__role", "steps__specific_user"
+        )
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user, updated_by=self.request.user)
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user)
+
+
+@extend_schema_view(
     list=extend_schema(summary="Список документов", tags=["Documents"]),
     retrieve=extend_schema(summary="Документ", tags=["Documents"]),
     create=extend_schema(summary="Создать документ", tags=["Documents"]),
@@ -130,6 +180,9 @@ class DocumentViewSet(viewsets.ModelViewSet):
         "create": "documents.create",
         "list": "documents.view",
         "retrieve": "documents.view",
+        "update": "documents.create",
+        "partial_update": "documents.create",
+        "destroy": "documents.create",
         "my": "documents.view",
         "returned": "documents.view",
         "overdue": "documents.view",
@@ -140,12 +193,24 @@ class DocumentViewSet(viewsets.ModelViewSet):
         "approval": "documents.view",
         "approve": "documents.approve",
         "return_document": "documents.return",
+        "complete": ["documents.edit", "documents.create"],
+        "archive": "documents.archive",
+        "restore": "documents.archive",
+        "files": "documents.view",
         "comments": "documents.view",
         "history": "documents.view",
     }
     filterset_class = DocumentFilter
     search_fields = ["title", "description", "registration_number"]
-    ordering_fields = ["created_at", "deadline", "title", "priority", "status"]
+    ordering_fields = [
+        "created_at",
+        "updated_at",
+        "deadline",
+        "title",
+        "priority",
+        "status",
+        "registration_number",
+    ]
     ordering = ["-created_at"]
     http_method_names = ["get", "post", "patch", "delete", "head", "options"]
 
@@ -155,7 +220,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
         )
         if getattr(self, "swagger_fake_view", False):
             return queryset.none()
-        return DocumentService.visible_to(self.request.user, queryset)
+        return DocumentAccessService.visible_to(self.request.user, queryset)
 
     def get_serializer_class(self):
         if self.action in {"create", "update", "partial_update"}:
@@ -180,6 +245,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
                 title="Вы назначены ответственным",
                 message=f"Вы назначены ответственным за документ «{document.title}».",
                 document=document,
+                dedupe_key=f"responsible_assigned:{document.id}:{document.responsible_id}",
             )
 
     def perform_update(self, serializer):
@@ -206,6 +272,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
                 title="Вы назначены ответственным",
                 message=f"Вы назначены ответственным за документ «{document.title}».",
                 document=document,
+                dedupe_key=f"responsible_assigned:{document.id}:{document.responsible_id}",
             )
 
     def perform_destroy(self, instance):
@@ -272,10 +339,11 @@ class DocumentViewSet(viewsets.ModelViewSet):
     )
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
+        document = self.get_object()
         serializer = DocumentSubmitSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         route = ApprovalService.submit(
-            self.get_object(), request.user, serializer.validated_data["approvers"]
+            document, request.user, serializer.validated_data["approvers"]
         )
         return Response(ApprovalRouteSerializer(route).data)
 
@@ -327,10 +395,11 @@ class DocumentViewSet(viewsets.ModelViewSet):
     )
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
+        document = self.get_object()
         serializer = ApprovalDecisionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         route = ApprovalService.approve(
-            self.get_object(), request.user, serializer.validated_data["comment"]
+            document, request.user, serializer.validated_data["comment"]
         )
         return Response(ApprovalRouteSerializer(route).data)
 
@@ -342,10 +411,11 @@ class DocumentViewSet(viewsets.ModelViewSet):
     )
     @action(detail=True, methods=["post"], url_path="return")
     def return_document(self, request, pk=None):
+        document = self.get_object()
         serializer = ApprovalReturnSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         route = ApprovalService.return_document(
-            self.get_object(), request.user, serializer.validated_data["comment"]
+            document, request.user, serializer.validated_data["comment"]
         )
         return Response(ApprovalRouteSerializer(route).data)
 
@@ -355,7 +425,11 @@ class DocumentViewSet(viewsets.ModelViewSet):
         request=DocumentFileUploadSerializer,
         responses={200: DocumentFileSerializer(many=True), 201: DocumentFileSerializer},
     )
-    @action(detail=True, methods=["get", "post"])
+    @action(
+        detail=True,
+        methods=["get", "post"],
+        parser_classes=[parsers.MultiPartParser],
+    )
     def files(self, request, pk=None):
         document = self.get_object()
         if request.method == "POST":
@@ -429,8 +503,13 @@ class DocumentViewSet(viewsets.ModelViewSet):
 class DocumentFileViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
     queryset = DocumentFile.objects.none()
     serializer_class = DocumentFileSerializer
-    permission_classes = [IsAuthenticated]
-    http_method_names = ["get", "delete", "head", "options"]
+    permission_classes = [IsAuthenticated, HasPermissionPerAction]
+    permission_map = {
+        "destroy": "documents.create",
+        "download": "documents.view",
+        "make_main": "documents.create",
+    }
+    http_method_names = ["get", "post", "delete", "head", "options"]
 
     def get_queryset(self):
         queryset = DocumentFile.objects.select_related(
@@ -438,11 +517,26 @@ class DocumentFileViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
         )
         if getattr(self, "swagger_fake_view", False):
             return queryset.none()
-        visible_documents = DocumentService.visible_to(self.request.user)
+        visible_documents = DocumentAccessService.visible_to(self.request.user)
         return queryset.filter(document__in=visible_documents)
 
     def perform_destroy(self, instance):
         FileService.delete(instance, self.request.user)
+
+    @extend_schema(
+        summary="Назначить файл основным",
+        tags=["Document files"],
+        request=None,
+        responses={200: DocumentFileSerializer},
+    )
+    @action(detail=True, methods=["post"], url_path="make-main")
+    def make_main(self, request, pk=None):
+        document_file = FileService.make_main(self.get_object(), request.user)
+        return Response(
+            DocumentFileSerializer(
+                document_file, context=self.get_serializer_context()
+            ).data
+        )
 
     @extend_schema(summary="Скачать файл документа", tags=["Document files"])
     @action(detail=True, methods=["get"])
@@ -461,14 +555,18 @@ class DocumentFileViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
 class DocumentCommentViewSet(viewsets.GenericViewSet):
     queryset = DocumentComment.objects.none()
     serializer_class = DocumentCommentSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasPermissionPerAction]
+    permission_map = {
+        "partial_update": "documents.view",
+        "destroy": "documents.view",
+    }
     http_method_names = ["patch", "delete", "head", "options"]
 
     def get_queryset(self):
         queryset = DocumentComment.objects.select_related("document", "author")
         if getattr(self, "swagger_fake_view", False):
             return queryset.none()
-        visible_documents = DocumentService.visible_to(self.request.user)
+        visible_documents = DocumentAccessService.visible_to(self.request.user)
         return queryset.filter(document__in=visible_documents)
 
     @extend_schema(

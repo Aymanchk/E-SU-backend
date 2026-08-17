@@ -7,16 +7,24 @@ from django.db.models import Count, Q, QuerySet
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
-from apps.notifications.models import NotificationType
+from apps.accounts.models import User, UserStatus
+from apps.audit.constants import AuditAction
+from apps.audit.services import log_action
+from apps.notifications.models import Notification, NotificationType
 from apps.notifications.services import NotificationService
 
+from .access import DocumentAccessService
 from .models import (
     ApprovalAction,
     ApprovalActionType,
     ApprovalRoute,
+    ApprovalRouteSource,
     ApprovalRouteStatus,
+    ApprovalRouteTemplate,
     ApprovalStep,
     ApprovalStepStatus,
+    ApprovalTemplateApproverType,
+    ApprovalTemplateDepartmentRelation,
     Document,
     DocumentCategory,
     DocumentCategoryStatus,
@@ -28,6 +36,7 @@ from .models import (
     DocumentNumberCounter,
     DocumentStatus,
 )
+from .transitions import DocumentStateMachine, DocumentTransitionAction
 
 
 class DocumentCategoryService:
@@ -58,59 +67,36 @@ class DocumentCategoryService:
 
 
 class DocumentService:
-    EDITABLE_STATUSES = {DocumentStatus.DRAFT, DocumentStatus.RETURNED}
+    EDITABLE_STATUSES = DocumentAccessService.EDITABLE_STATUSES
 
     @staticmethod
     def visible_to(user, queryset: QuerySet | None = None) -> QuerySet:
-        queryset = queryset if queryset is not None else Document.objects.all()
-        if user.is_superuser or user.is_admin_role:
-            return queryset
-
-        role_code = user.role.code if user.role_id else None
-        own_or_responsible = Q(author=user) | Q(responsible=user) | Q(approval_steps__approver=user)
-        if role_code == "manager":
-            return queryset.filter(own_or_responsible | Q(department=user.department)).distinct()
-        if role_code == "office":
-            return queryset.filter(
-                own_or_responsible
-                | Q(
-                    status__in=[
-                        DocumentStatus.IN_REVIEW,
-                        DocumentStatus.APPROVED,
-                        DocumentStatus.COMPLETED,
-                        DocumentStatus.OVERDUE,
-                        DocumentStatus.ARCHIVED,
-                    ]
-                )
-            ).distinct()
-        return queryset.filter(own_or_responsible).distinct()
+        return DocumentAccessService.visible_to(user, queryset)
 
     @classmethod
     def ensure_can_edit(cls, document: Document, user) -> None:
         if document.status not in cls.EDITABLE_STATUSES:
             raise ValidationError("Документ в этом статусе нельзя редактировать")
-        if not (user.is_admin_role or document.author_id == user.id):
+        if not DocumentAccessService.can_edit(user, document):
             raise PermissionDenied("Редактировать документ может только автор или администратор")
 
     @classmethod
     def ensure_can_delete(cls, document: Document, user) -> None:
         if document.status != DocumentStatus.DRAFT:
             raise ValidationError("После отправки документ нельзя удалить")
-        if not (user.is_admin_role or document.author_id == user.id):
+        if not DocumentAccessService.can_delete(user, document):
             raise PermissionDenied("Удалить документ может только автор или администратор")
 
     @staticmethod
     @transaction.atomic
     def complete(document: Document, user) -> Document:
-        if document.status != DocumentStatus.APPROVED:
-            raise ValidationError("Завершить можно только согласованный документ")
-        if not (
-            user.is_admin_role
-            or document.responsible_id == user.id
-            or user.has_permission("documents.edit")
-        ):
+        document = Document.objects.select_for_update().get(pk=document.pk)
+        target_status = DocumentStateMachine.target_status(
+            document, DocumentTransitionAction.COMPLETE
+        )
+        if not DocumentAccessService.can_complete(user, document):
             raise PermissionDenied("Недостаточно прав для завершения документа")
-        document.status = DocumentStatus.COMPLETED
+        document.status = target_status
         document.completed_at = timezone.now()
         document.save(update_fields=["status", "completed_at", "updated_at"])
         HistoryService.record(
@@ -126,12 +112,16 @@ class DocumentService:
     @staticmethod
     @transaction.atomic
     def archive(document: Document, user) -> Document:
-        if document.status not in {DocumentStatus.APPROVED, DocumentStatus.COMPLETED}:
-            raise ValidationError("Архивировать можно согласованный или завершённый документ")
-        if not (user.is_admin_role or user.has_permission("documents.archive")):
+        document = Document.objects.select_for_update().select_related("author").get(
+            pk=document.pk
+        )
+        target_status = DocumentStateMachine.target_status(
+            document, DocumentTransitionAction.ARCHIVE
+        )
+        if not DocumentAccessService.can_archive(user, document):
             raise PermissionDenied("Недостаточно прав для архивирования документа")
         previous_status = document.status
-        document.status = DocumentStatus.ARCHIVED
+        document.status = target_status
         document.archived_at = timezone.now()
         document.save(update_fields=["status", "archived_at", "updated_at"])
         HistoryService.record(
@@ -149,19 +139,19 @@ class DocumentService:
                 title="Документ архивирован",
                 message=f"Документ «{document.title}» перемещён в архив.",
                 document=document,
+                dedupe_key=f"document_archived:{document.id}:{document.archived_at.isoformat()}",
             )
         return document
 
     @staticmethod
     @transaction.atomic
     def restore(document: Document, user) -> Document:
-        if document.status != DocumentStatus.ARCHIVED:
-            raise ValidationError("Документ не находится в архиве")
-        if not (user.is_admin_role or user.has_permission("documents.archive")):
-            raise PermissionDenied("Недостаточно прав для восстановления документа")
-        restored_status = (
-            DocumentStatus.COMPLETED if document.completed_at else DocumentStatus.APPROVED
+        document = Document.objects.select_for_update().get(pk=document.pk)
+        restored_status = DocumentStateMachine.target_status(
+            document, DocumentTransitionAction.RESTORE
         )
+        if not DocumentAccessService.can_restore(user, document):
+            raise PermissionDenied("Недостаточно прав для восстановления документа")
         document.status = restored_status
         document.archived_at = None
         document.save(update_fields=["status", "archived_at", "updated_at"])
@@ -178,10 +168,10 @@ class DocumentService:
 
 class RegistrationService:
     @staticmethod
-    def _locked_counter(category: DocumentCategory, year: int) -> DocumentNumberCounter:
+    def _locked_counter(department, year: int) -> DocumentNumberCounter:
         try:
             return DocumentNumberCounter.objects.select_for_update().get(
-                category=category, year=year
+                department=department, year=year
             )
         except DocumentNumberCounter.DoesNotExist:
             try:
@@ -189,21 +179,23 @@ class RegistrationService:
                 # creates the same unique counter at exactly this moment.
                 with transaction.atomic():
                     return DocumentNumberCounter.objects.create(
-                        category=category, year=year, last_number=0
+                        department=department, year=year, last_number=0
                     )
             except IntegrityError:
                 return DocumentNumberCounter.objects.select_for_update().get(
-                    category=category, year=year
+                    department=department, year=year
                 )
 
     @classmethod
     @transaction.atomic
     def register(cls, document: Document, user) -> Document:
-        if not (user.is_admin_role or user.has_permission("documents.register")):
+        if not DocumentAccessService.can_register(user, document):
             raise PermissionDenied("Недостаточно прав для регистрации документа")
 
         document = (
-            Document.objects.select_for_update().select_related("category").get(pk=document.pk)
+            Document.objects.select_for_update()
+            .select_related("category", "department")
+            .get(pk=document.pk)
         )
         if document.registration_number:
             raise ValidationError("Документ уже зарегистрирован")
@@ -211,12 +203,17 @@ class RegistrationService:
             raise ValidationError("Зарегистрировать можно только согласованный документ")
 
         year = timezone.localdate().year
-        counter = cls._locked_counter(document.category, year)
+        counter = cls._locked_counter(document.department, year)
         counter.last_number += 1
         counter.save(update_fields=["last_number", "updated_at"])
 
-        category_code = document.category.code.upper()
-        document.registration_number = f"ESU-{category_code}-{year}-{counter.last_number:06d}"
+        padded_number = str(counter.last_number).zfill(settings.DOCUMENT_NUMBER_PADDING)
+        document.registration_number = settings.DOCUMENT_NUMBER_FORMAT.format(
+            prefix=settings.DOCUMENT_NUMBER_PREFIX,
+            department=document.department.code.upper(),
+            year=year,
+            number=padded_number,
+        )
         document.save(update_fields=["registration_number", "updated_at"])
         HistoryService.record(
             document,
@@ -225,6 +222,17 @@ class RegistrationService:
             old_values={"registration_number": None},
             new_values={"registration_number": document.registration_number},
             description=f"Документ зарегистрирован: {document.registration_number}",
+        )
+        NotificationService.notify_many(
+            [document.author, document.responsible],
+            notification_type=NotificationType.DOCUMENT_REGISTERED,
+            title="Документ зарегистрирован",
+            message=(
+                f"Документ «{document.title}» зарегистрирован под номером "
+                f"{document.registration_number}."
+            ),
+            document=document,
+            dedupe_key=f"document_registered:{document.id}:{document.registration_number}",
         )
         return document
 
@@ -290,10 +298,18 @@ class FileService:
     @classmethod
     @transaction.atomic
     def upload(cls, document: Document, uploaded_file, user, is_main=False) -> DocumentFile:
-        DocumentService.ensure_can_edit(document, user)
+        document = Document.objects.select_for_update().get(pk=document.pk)
+        if not DocumentAccessService.can_upload_file(user, document):
+            DocumentService.ensure_can_edit(document, user)
         file_type, mime_type = cls.validate_upload(uploaded_file)
 
-        existing_files = document.files.exists()
+        existing_files_count = document.files.count()
+        if existing_files_count >= settings.MAX_DOCUMENT_FILES:
+            raise ValidationError(
+                f"К одному документу можно прикрепить не более {settings.MAX_DOCUMENT_FILES} файлов"
+            )
+
+        existing_files = existing_files_count > 0
         make_main = is_main or not existing_files
         if make_main:
             document.files.filter(is_main=True).update(is_main=False)
@@ -323,8 +339,33 @@ class FileService:
 
     @staticmethod
     @transaction.atomic
+    def make_main(document_file: DocumentFile, user) -> DocumentFile:
+        document = Document.objects.select_for_update().get(pk=document_file.document_id)
+        if not DocumentAccessService.can_upload_file(user, document):
+            DocumentService.ensure_can_edit(document, user)
+        document_file = DocumentFile.objects.select_for_update().get(pk=document_file.pk)
+        if document_file.is_main:
+            return document_file
+
+        document.files.filter(is_main=True).update(is_main=False)
+        document_file.is_main = True
+        document_file.save(update_fields=["is_main"])
+        HistoryService.record(
+            document,
+            user,
+            DocumentHistoryAction.UPDATED,
+            new_values={"main_file_id": document_file.id},
+            description=f"Файл {document_file.original_name} назначен основным",
+        )
+        return document_file
+
+    @staticmethod
+    @transaction.atomic
     def delete(document_file: DocumentFile, user) -> None:
-        DocumentService.ensure_can_edit(document_file.document, user)
+        document = Document.objects.select_for_update().get(pk=document_file.document_id)
+        if not DocumentAccessService.can_delete_file(user, document):
+            DocumentService.ensure_can_edit(document, user)
+        document_file = DocumentFile.objects.select_for_update().get(pk=document_file.pk)
         HistoryService.record(
             document_file.document,
             user,
@@ -338,7 +379,17 @@ class FileService:
         )
         storage = document_file.file.storage
         stored_name = document_file.file.name
+        replacement = None
+        if document_file.is_main:
+            replacement = (
+                document.files.exclude(pk=document_file.pk)
+                .order_by("created_at")
+                .first()
+            )
         document_file.delete()
+        if replacement is not None:
+            replacement.is_main = True
+            replacement.save(update_fields=["is_main"])
         transaction.on_commit(lambda: storage.delete(stored_name))
 
 
@@ -349,15 +400,133 @@ class ApprovalService:
 
     @staticmethod
     def _ensure_current_approver(step: ApprovalStep, user) -> None:
-        if not (user.is_admin_role or step.approver_id == user.id):
+        if not DocumentAccessService.can_approve(user, step.document):
             raise PermissionDenied("Действие доступно только текущему согласующему")
+
+    @staticmethod
+    def _is_active_approver(user) -> bool:
+        return bool(
+            user
+            and user.status == UserStatus.ACTIVE
+            and user.is_active
+            and not user.is_deleted
+        )
+
+    @classmethod
+    def _resolve_template_step(cls, document: Document, step):
+        if step.approver_type == ApprovalTemplateApproverType.SPECIFIC_USER:
+            return step.specific_user
+        if step.approver_type == ApprovalTemplateApproverType.DOCUMENT_RESPONSIBLE:
+            return document.responsible
+        if step.approver_type == ApprovalTemplateApproverType.DEPARTMENT_MANAGER:
+            department = (
+                document.author.department
+                if step.department_relation
+                == ApprovalTemplateDepartmentRelation.AUTHOR_DEPARTMENT
+                else document.department
+            )
+            return department.manager if department else None
+        if step.approver_type == ApprovalTemplateApproverType.ROLE:
+            candidates = User.objects.filter(
+                role=step.role,
+                status=UserStatus.ACTIVE,
+                is_active=True,
+            ).select_related("role")
+            return (
+                candidates.filter(department=document.department).order_by("email").first()
+                or candidates.order_by("email").first()
+            )
+        return None
+
+    @classmethod
+    def _resolve_route(cls, document: Document, manual_approvers: list):
+        if manual_approvers:
+            ids = [approver.id for approver in manual_approvers]
+            if len(ids) != len(set(ids)):
+                raise ValidationError("Согласующие в маршруте не должны повторяться")
+            if not all(cls._is_active_approver(approver) for approver in manual_approvers):
+                raise ValidationError("Все согласующие должны быть активны")
+            return (
+                manual_approvers,
+                None,
+                ApprovalRouteSource.MANUAL,
+                {
+                    "source": ApprovalRouteSource.MANUAL,
+                    "approvers": [str(approver.id) for approver in manual_approvers],
+                },
+            )
+
+        template = (
+            ApprovalRouteTemplate.objects.filter(
+                category=document.category, is_active=True
+            )
+            .prefetch_related("steps__role", "steps__specific_user")
+            .first()
+        )
+        if template is None:
+            raise ValidationError(
+                "Передайте согласующих вручную или настройте активный шаблон категории"
+            )
+
+        approvers = []
+        snapshot_steps = []
+        seen_ids = set()
+        for step in template.steps.all():
+            approver = cls._resolve_template_step(document, step)
+            if not cls._is_active_approver(approver):
+                if step.is_required:
+                    raise ValidationError(
+                        f"Не удалось определить активного согласующего для шага {step.order}"
+                    )
+                continue
+            if approver.id in seen_ids:
+                raise ValidationError(
+                    f"Пользователь {approver.email} повторяется в шаблоне согласования"
+                )
+            seen_ids.add(approver.id)
+            approvers.append(approver)
+            snapshot_steps.append(
+                {
+                    "template_order": step.order,
+                    "route_order": len(approvers),
+                    "approver_type": step.approver_type,
+                    "role_id": str(step.role_id) if step.role_id else None,
+                    "specific_user_id": (
+                        str(step.specific_user_id) if step.specific_user_id else None
+                    ),
+                    "department_relation": step.department_relation,
+                    "is_required": step.is_required,
+                    "resolved_approver_id": str(approver.id),
+                }
+            )
+
+        if not approvers:
+            raise ValidationError("Шаблон категории не создал ни одного шага согласования")
+        return (
+            approvers,
+            template,
+            ApprovalRouteSource.CATEGORY_TEMPLATE,
+            {
+                "source": ApprovalRouteSource.CATEGORY_TEMPLATE,
+                "template_id": str(template.id),
+                "template_name": template.name,
+                "steps": snapshot_steps,
+            },
+        )
 
     @classmethod
     @transaction.atomic
     def submit(cls, document: Document, user, approvers: list) -> ApprovalRoute:
         document = cls._locked_document(document)
+        transition_action = DocumentStateMachine.submission_action(document)
+        target_status = DocumentStateMachine.target_status(document, transition_action)
         DocumentService.ensure_can_edit(document, user)
         previous_status = document.status
+        if document.category.requires_file and not document.files.exists():
+            raise ValidationError("Для этой категории необходимо загрузить файл")
+        approvers, template, route_source, route_snapshot = cls._resolve_route(
+            document, approvers
+        )
 
         ApprovalRoute.objects.filter(document=document, status=ApprovalRouteStatus.ACTIVE).update(
             status=ApprovalRouteStatus.CANCELLED, completed_at=timezone.now()
@@ -368,7 +537,13 @@ class ApprovalService:
             status__in=[ApprovalStepStatus.PENDING, ApprovalStepStatus.CURRENT],
         ).update(status=ApprovalStepStatus.CANCELLED)
 
-        route = ApprovalRoute.objects.create(document=document, created_by=user)
+        route = ApprovalRoute.objects.create(
+            document=document,
+            created_by=user,
+            source=route_source,
+            template=template,
+            template_snapshot=route_snapshot,
+        )
         ApprovalStep.objects.bulk_create(
             [
                 ApprovalStep(
@@ -385,7 +560,7 @@ class ApprovalService:
             ]
         )
 
-        document.status = DocumentStatus.IN_REVIEW
+        document.status = target_status
         document.submitted_at = timezone.now()
         document.approved_at = None
         document.current_approval_step = 1
@@ -425,6 +600,7 @@ class ApprovalService:
             title="Документ отправлен на согласование",
             message=f"Документ «{document.title}» отправлен по маршруту согласования.",
             document=document,
+            dedupe_key=f"document_submitted:{route.id}:{document.author_id}",
         )
         first_approver = approvers[0]
         NotificationService.create(
@@ -433,6 +609,7 @@ class ApprovalService:
             title="Требуется согласование",
             message=f"Вам назначен документ «{document.title}» на согласование.",
             document=document,
+            dedupe_key=f"approval_required:{route.steps.get(order=1).id}:{first_approver.id}",
         )
         return route
 
@@ -440,8 +617,9 @@ class ApprovalService:
     @transaction.atomic
     def approve(cls, document: Document, user, comment="") -> ApprovalRoute:
         document = cls._locked_document(document)
-        if document.status != DocumentStatus.IN_REVIEW:
-            raise ValidationError("Документ не находится на согласовании")
+        approved_status = DocumentStateMachine.target_status(
+            document, DocumentTransitionAction.APPROVE
+        )
         route = ApprovalRoute.objects.select_for_update().get(
             document=document, status=ApprovalRouteStatus.ACTIVE
         )
@@ -490,12 +668,13 @@ class ApprovalService:
                 title="Требуется согласование",
                 message=f"Вам назначен документ «{document.title}» на согласование.",
                 document=document,
+                dedupe_key=f"approval_required:{next_step.id}:{next_step.approver_id}",
             )
         else:
             route.status = ApprovalRouteStatus.COMPLETED
             route.completed_at = now
             route.save(update_fields=["status", "completed_at"])
-            document.status = DocumentStatus.APPROVED
+            document.status = approved_status
             document.approved_at = now
             document.current_approval_step = None
             document.save(
@@ -512,6 +691,7 @@ class ApprovalService:
                 title="Документ согласован",
                 message=f"Документ «{document.title}» успешно согласован.",
                 document=document,
+                dedupe_key=f"document_approved:{route.id}",
             )
         HistoryService.record(
             document,
@@ -531,8 +711,9 @@ class ApprovalService:
     @transaction.atomic
     def return_document(cls, document: Document, user, comment: str) -> ApprovalRoute:
         document = cls._locked_document(document)
-        if document.status != DocumentStatus.IN_REVIEW:
-            raise ValidationError("Документ не находится на согласовании")
+        returned_status = DocumentStateMachine.target_status(
+            document, DocumentTransitionAction.RETURN
+        )
         route = ApprovalRoute.objects.select_for_update().get(
             document=document, status=ApprovalRouteStatus.ACTIVE
         )
@@ -569,7 +750,7 @@ class ApprovalService:
         route.status = ApprovalRouteStatus.RETURNED
         route.completed_at = now
         route.save(update_fields=["status", "completed_at"])
-        document.status = DocumentStatus.RETURNED
+        document.status = returned_status
         document.current_approval_step = None
         document.save(update_fields=["status", "current_approval_step", "updated_at"])
         HistoryService.record(
@@ -586,6 +767,7 @@ class ApprovalService:
             title="Документ возвращён",
             message=f"Документ «{document.title}» возвращён: {comment}",
             document=document,
+            dedupe_key=f"document_returned:{route.id}:{document.author_id}",
         )
         return route
 
@@ -602,6 +784,13 @@ class CommentService:
             text=text,
             comment_type=DocumentCommentType.GENERAL,
         )
+        HistoryService.record(
+            document,
+            user,
+            DocumentHistoryAction.COMMENT_ADDED,
+            new_values={"comment_id": comment.id, "text": comment.text},
+            description="Добавлен комментарий",
+        )
         recipients = [
             recipient
             for recipient in [document.author, document.responsible]
@@ -613,6 +802,7 @@ class CommentService:
             title="Новый комментарий к документу",
             message=f"К документу «{document.title}» добавлен комментарий.",
             document=document,
+            dedupe_key=f"comment_added:{comment.id}",
         )
         return comment
 
@@ -628,15 +818,37 @@ class CommentService:
     @classmethod
     @transaction.atomic
     def update(cls, comment: DocumentComment, user, text: str) -> DocumentComment:
+        comment = DocumentComment.objects.select_for_update().select_related("document").get(
+            pk=comment.pk
+        )
         cls.ensure_editable(comment, user)
+        old_text = comment.text
         comment.text = text
         comment.save(update_fields=["text", "updated_at"])
+        HistoryService.record(
+            comment.document,
+            user,
+            DocumentHistoryAction.COMMENT_UPDATED,
+            old_values={"comment_id": comment.id, "text": old_text},
+            new_values={"comment_id": comment.id, "text": comment.text},
+            description="Комментарий отредактирован",
+        )
         return comment
 
     @classmethod
     @transaction.atomic
     def delete(cls, comment: DocumentComment, user) -> None:
+        comment = DocumentComment.objects.select_for_update().select_related("document").get(
+            pk=comment.pk
+        )
         cls.ensure_editable(comment, user)
+        HistoryService.record(
+            comment.document,
+            user,
+            DocumentHistoryAction.COMMENT_DELETED,
+            old_values={"comment_id": comment.id, "text": comment.text},
+            description="Комментарий удалён",
+        )
         comment.delete()
 
 
@@ -684,58 +896,89 @@ class HistoryService:
         new_values=None,
         description="",
     ) -> DocumentHistory:
-        return DocumentHistory.objects.create(
+        normalized_old_values = cls.normalize_mapping(old_values)
+        normalized_new_values = cls.normalize_mapping(new_values)
+        entry = DocumentHistory.objects.create(
             document=document,
             user=user,
             action=action,
-            old_values=cls.normalize_mapping(old_values),
-            new_values=cls.normalize_mapping(new_values),
+            old_values=normalized_old_values,
+            new_values=normalized_new_values,
             description=description,
         )
+        log_action(
+            user=user,
+            action=(
+                AuditAction.DOCUMENT_REGISTER
+                if action == DocumentHistoryAction.REGISTERED
+                else AuditAction.DOCUMENT_ACTION
+            ),
+            obj=document,
+            description=description,
+            metadata={
+                "history_id": str(entry.id),
+                "document_action": action,
+                "old_values": normalized_old_values,
+                "new_values": normalized_new_values,
+                **normalized_new_values,
+            },
+        )
+        return entry
 
 
 class DashboardService:
     LIST_LIMIT = 5
-    ACTIONS_LIMIT = 10
 
     @staticmethod
     def documents_for(user) -> QuerySet:
-        queryset = Document.objects.all()
-        if not (user.is_superuser or user.is_admin_role):
-            role_code = user.role.code if user.role_id else None
-            if role_code == "employee":
-                queryset = queryset.filter(author=user)
-            else:
-                queryset = DocumentService.visible_to(user, queryset)
+        return DocumentAccessService.visible_to(
+            user,
+            Document.objects.select_related(
+                "category", "author", "department", "responsible"
+            ),
+        )
 
-        return queryset.select_related("category", "author", "department", "responsible")
+    @staticmethod
+    def quick_actions(user, approval_count: int) -> list[dict]:
+        actions = []
+        if user.has_permission("documents.create"):
+            actions.append(
+                {"code": "create_document", "label": "Создать документ", "url": "/documents/new"}
+            )
+        if approval_count:
+            actions.append(
+                {"code": "review_documents", "label": "Согласовать документы", "url": "/documents/for-approval"}
+            )
+        if user.has_permission("documents.register"):
+            actions.append(
+                {"code": "register_documents", "label": "Зарегистрировать документы", "url": "/documents"}
+            )
+        return actions
 
     @classmethod
     def build(cls, user) -> dict:
         documents = cls.documents_for(user)
+        approval_documents = documents.filter(
+            approval_steps__status=ApprovalStepStatus.CURRENT,
+            approval_steps__approver=user,
+        ).distinct()
         counters = documents.aggregate(
-            total_documents=Count("id"),
-            in_review=Count("id", filter=Q(status=DocumentStatus.IN_REVIEW)),
+            all=Count("id"),
+            my=Count("id", filter=Q(author=user)),
             returned=Count("id", filter=Q(status=DocumentStatus.RETURNED)),
             overdue=Count("id", filter=Q(status=DocumentStatus.OVERDUE)),
-            completed=Count("id", filter=Q(status=DocumentStatus.COMPLETED)),
+            archived=Count("id", filter=Q(status=DocumentStatus.ARCHIVED)),
         )
-
-        approval_tasks = ApprovalStep.objects.filter(status=ApprovalStepStatus.CURRENT)
-        if not (user.is_superuser or user.is_admin_role):
-            approval_tasks = approval_tasks.filter(approver=user)
-
-        visible_ids = documents.values("id")
+        approval_count = approval_documents.count()
+        counters["for_approval"] = approval_count
         return {
-            **counters,
-            "approval_tasks": approval_tasks.count(),
+            "counters": counters,
             "recent_documents": documents.order_by("-created_at")[: cls.LIST_LIMIT],
-            "upcoming_deadlines": documents.filter(
-                deadline__gte=timezone.now(),
-            )
-            .exclude(status__in=[DocumentStatus.COMPLETED, DocumentStatus.ARCHIVED])
-            .order_by("deadline")[: cls.LIST_LIMIT],
-            "recent_actions": DocumentHistory.objects.filter(document_id__in=visible_ids)
-            .select_related("document", "user")
-            .order_by("-created_at")[: cls.ACTIONS_LIMIT],
+            "approval_documents": approval_documents.order_by("-created_at")[
+                : cls.LIST_LIMIT
+            ],
+            "recent_notifications": Notification.objects.filter(recipient=user)
+            .select_related("document")
+            .order_by("-created_at")[: cls.LIST_LIMIT],
+            "quick_actions": cls.quick_actions(user, approval_count),
         }

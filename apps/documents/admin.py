@@ -3,6 +3,8 @@ from django.contrib import admin
 from .models import (
     ApprovalAction,
     ApprovalRoute,
+    ApprovalRouteTemplate,
+    ApprovalRouteTemplateStep,
     ApprovalStep,
     Document,
     DocumentCategory,
@@ -21,6 +23,19 @@ class DocumentCategoryAdmin(admin.ModelAdmin):
     filter_horizontal = ("allowed_departments",)
 
 
+class ApprovalRouteTemplateStepInline(admin.TabularInline):
+    model = ApprovalRouteTemplateStep
+    extra = 0
+
+
+@admin.register(ApprovalRouteTemplate)
+class ApprovalRouteTemplateAdmin(admin.ModelAdmin):
+    list_display = ("name", "category", "is_active", "created_at")
+    list_filter = ("is_active", "category")
+    search_fields = ("name", "category__name", "category__code")
+    inlines = (ApprovalRouteTemplateStepInline,)
+
+
 @admin.register(Document)
 class DocumentAdmin(admin.ModelAdmin):
     list_display = ("title", "registration_number", "status", "priority", "author", "created_at")
@@ -31,10 +46,16 @@ class DocumentAdmin(admin.ModelAdmin):
 
 @admin.register(DocumentNumberCounter)
 class DocumentNumberCounterAdmin(admin.ModelAdmin):
-    list_display = ("category", "year", "last_number", "updated_at")
+    list_display = ("department", "year", "last_number", "updated_at")
     list_filter = ("year",)
-    search_fields = ("category__name", "category__code")
-    readonly_fields = ("category", "year", "last_number", "updated_at")
+    search_fields = ("department__name", "department__code")
+    readonly_fields = (
+        "department",
+        "category",
+        "year",
+        "last_number",
+        "updated_at",
+    )
 
 
 @admin.register(DocumentFile)

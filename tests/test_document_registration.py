@@ -1,12 +1,18 @@
-import pytest
-from django.db import IntegrityError, transaction
+from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+from django.db import IntegrityError, close_old_connections, transaction
+
+from apps.accounts.models import User
+from apps.audit.constants import AuditAction
+from apps.audit.models import AuditLog
 from apps.documents.models import (
     Document,
     DocumentCategory,
     DocumentNumberCounter,
     DocumentStatus,
 )
+from apps.documents.services import RegistrationService
 
 pytestmark = pytest.mark.django_db
 
@@ -50,8 +56,11 @@ class TestDocumentRegistrationApi:
 
         assert response.status_code == 200
         number = response.json()["data"]["registration_number"]
-        assert number.startswith("ESU-ORDERS-")
+        assert number.startswith("ESU-IT-")
         assert number.endswith("-000001")
+        audit = AuditLog.objects.get(action=AuditAction.DOCUMENT_REGISTER)
+        assert audit.object_id == str(approved_document.id)
+        assert audit.metadata["registration_number"] == number
 
     def test_admin_can_register(self, admin_client, approved_document):
         assert (
@@ -109,10 +118,62 @@ class TestDocumentRegistrationApi:
         assert second_number.endswith("-000002")
         assert DocumentNumberCounter.objects.get().last_number == 2
 
+    def test_number_format_comes_from_settings(
+        self, settings, office_client, approved_document
+    ):
+        settings.DOCUMENT_NUMBER_FORMAT = "DOC-{year}-{department}-{number}"
+        settings.DOCUMENT_NUMBER_PADDING = 4
 
-def test_counter_is_unique_per_category_and_year(registration_category):
-    DocumentNumberCounter.objects.create(category=registration_category, year=2026, last_number=1)
+        number = office_client.post(
+            f"/api/v1/documents/{approved_document.id}/register/"
+        ).json()["data"]["registration_number"]
+
+        assert number == "DOC-2026-IT-0001"
+
+
+def test_counter_is_unique_per_department_and_year(child_department):
+    DocumentNumberCounter.objects.create(
+        department=child_department, year=2026, last_number=1
+    )
     with pytest.raises(IntegrityError), transaction.atomic():
         DocumentNumberCounter.objects.create(
-            category=registration_category, year=2026, last_number=2
+            department=child_department, year=2026, last_number=2
         )
+
+
+@pytest.mark.django_db(transaction=True, serialized_rollback=True)
+def test_concurrent_registration_generates_unique_sequential_numbers(
+    office,
+    employee,
+    child_department,
+    registration_category,
+):
+    documents = [
+        Document.objects.create(
+            title=f"Конкурентный документ {index}",
+            document_type="order",
+            category=registration_category,
+            author=employee,
+            department=child_department,
+            status=DocumentStatus.APPROVED,
+        )
+        for index in range(5)
+    ]
+
+    def register(document_id):
+        close_old_connections()
+        try:
+            thread_user = User.objects.get(pk=office.pk)
+            document = Document.objects.get(pk=document_id)
+            return RegistrationService.register(document, thread_user).registration_number
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        numbers = list(executor.map(register, [document.id for document in documents]))
+
+    assert len(numbers) == len(set(numbers)) == 5
+    assert sorted(int(number.rsplit("-", 1)[1]) for number in numbers) == [1, 2, 3, 4, 5]
+    assert DocumentNumberCounter.objects.get(
+        department=child_department, year=2026
+    ).last_number == 5

@@ -9,11 +9,12 @@ from apps.documents.models import (
     ApprovalStepStatus,
     Document,
     DocumentCategory,
-    DocumentHistory,
-    DocumentHistoryAction,
     DocumentStatus,
 )
+from apps.documents.serializers import DashboardSerializer
 from apps.documents.services import DashboardService
+from apps.notifications.models import NotificationType
+from apps.notifications.services import NotificationService
 from apps.organizations.models import Department
 
 pytestmark = pytest.mark.django_db
@@ -47,30 +48,35 @@ def create_document(category, author, department, **kwargs):
 
 
 class TestDashboardAccess:
-    def test_employee_sees_only_authored_documents(
+    def test_employee_sees_authored_and_responsible_documents(
         self, employee_client, employee, manager, child_department, category
     ):
-        own = create_document(category, employee, child_department, status=DocumentStatus.IN_REVIEW)
-        create_document(
+        own = create_document(
+            category, employee, child_department, status=DocumentStatus.IN_REVIEW
+        )
+        responsible_document = create_document(
             category,
             manager,
             child_department,
             responsible=employee,
             status=DocumentStatus.RETURNED,
         )
-        DocumentHistory.objects.create(
-            document=own, user=employee, action=DocumentHistoryAction.CREATED
-        )
-
         response = employee_client.get("/api/v1/dashboard/")
 
         assert response.status_code == 200
         data = response.json()["data"]
-        assert data["total_documents"] == 1
-        assert data["in_review"] == 1
-        assert data["returned"] == 0
-        assert [item["id"] for item in data["recent_documents"]] == [str(own.id)]
-        assert len(data["recent_actions"]) == 1
+        assert data["counters"] == {
+            "all": 2,
+            "my": 1,
+            "for_approval": 0,
+            "returned": 1,
+            "overdue": 0,
+            "archived": 0,
+        }
+        assert {item["id"] for item in data["recent_documents"]} == {
+            str(own.id),
+            str(responsible_document.id),
+        }
 
     def test_manager_sees_department_and_personal_approval_tasks(
         self, manager_client, manager, employee, child_department, category, user_factory
@@ -98,8 +104,11 @@ class TestDashboardAccess:
 
         data = manager_client.get("/api/v1/dashboard/").json()["data"]
 
-        assert data["total_documents"] == 1
-        assert data["approval_tasks"] == 1
+        assert data["counters"]["all"] == 1
+        assert data["counters"]["for_approval"] == 1
+        assert [item["id"] for item in data["approval_documents"]] == [
+            str(department_document.id)
+        ]
 
     def test_admin_sees_global_statistics(
         self, admin_client, admin, employee, child_department, root_department, category
@@ -109,9 +118,9 @@ class TestDashboardAccess:
 
         data = admin_client.get("/api/v1/dashboard/").json()["data"]
 
-        assert data["total_documents"] == 2
-        assert data["completed"] == 1
-        assert data["overdue"] == 1
+        assert data["counters"]["all"] == 2
+        assert data["counters"]["my"] == 1
+        assert data["counters"]["overdue"] == 1
 
 
 class TestDashboardContent:
@@ -129,25 +138,21 @@ class TestDashboardContent:
             )
             for index in range(7)
         ]
-        for document in documents:
-            DocumentHistory.objects.create(
-                document=document,
-                user=employee,
-                action=DocumentHistoryAction.CREATED,
-            )
-            DocumentHistory.objects.create(
-                document=document,
-                user=employee,
-                action=DocumentHistoryAction.UPDATED,
-            )
+        NotificationService.create(
+            recipient=employee,
+            notification_type=NotificationType.COMMENT_ADDED,
+            title="Dashboard",
+            message="Новое событие",
+            document=documents[0],
+            send_email=False,
+        )
 
         data = employee_client.get("/api/v1/dashboard/").json()["data"]
 
         assert len(data["recent_documents"]) == 5
-        assert len(data["upcoming_deadlines"]) == 5
-        assert len(data["recent_actions"]) == 10
-        deadlines = [item["deadline"] for item in data["upcoming_deadlines"]]
-        assert deadlines == sorted(deadlines)
+        assert data["approval_documents"] == []
+        assert len(data["recent_notifications"]) == 1
+        assert data["quick_actions"][0]["code"] == "create_document"
 
     def test_service_has_bounded_query_count(
         self,
@@ -158,8 +163,7 @@ class TestDashboardContent:
     ):
         create_document(category, employee, child_department)
 
-        with django_assert_max_num_queries(8):
+        with django_assert_max_num_queries(9):
             data = DashboardService.build(employee)
-            list(data["recent_documents"])
-            list(data["upcoming_deadlines"])
-            list(data["recent_actions"])
+            serialized = DashboardSerializer(data).data
+        assert serialized["counters"]["all"] == 1
