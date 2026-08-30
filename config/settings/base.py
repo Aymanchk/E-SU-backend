@@ -6,24 +6,74 @@
 from datetime import timedelta
 from pathlib import Path
 
-import environ
-
 # backend/config/settings/base.py -> backend/
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
-env = environ.Env(
-    DEBUG=(bool, False),
-)
-environ.Env.read_env(BASE_DIR / ".env")
+try:
+    import environ
+
+    env = environ.Env(
+        DEBUG=(bool, False),
+    )
+    environ.Env.read_env(BASE_DIR / ".env")
+except ImportError:
+    import os
+
+    class _FallbackEnv:
+        def __init__(self, **defaults):
+            self.defaults = defaults
+
+        def __call__(self, key, default=None):
+            return os.environ.get(key, default)
+
+        def bool(self, key, default=False):
+            val = os.environ.get(key)
+            if val is None:
+                return default
+            return str(val).lower() in ("true", "1", "yes", "on")
+
+        def int(self, key, default=0):
+            val = os.environ.get(key)
+            if val is None:
+                return default
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return default
+
+        def list(self, key, default=None):
+            val = os.environ.get(key)
+            if val is None:
+                return default if default is not None else []
+            return [x.strip() for x in val.split(",") if x.strip()]
+
+        def db(self, key, default=None):
+            val = os.environ.get(key, default)
+            if not val or "sqlite" in val:
+                path = val.replace("sqlite:///", "").replace("sqlite://", "") if val else str(BASE_DIR / "db.sqlite3")
+                return {
+                    "ENGINE": "django.db.backends.sqlite3",
+                    "NAME": path,
+                }
+            return {
+                "ENGINE": "django.db.backends.sqlite3",
+                "NAME": str(BASE_DIR / "db.sqlite3"),
+            }
+
+        @staticmethod
+        def read_env(*args, **kwargs):
+            pass
+
+    env = _FallbackEnv()
 
 
 # ---------------------------------------------------------------------------
 # Основное
 # ---------------------------------------------------------------------------
 
-SECRET_KEY = env("SECRET_KEY")
-DEBUG = env("DEBUG")
-ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
+SECRET_KEY = env("SECRET_KEY", default="django-insecure-e-su-secret-key-change-in-production-2026")
+DEBUG = env("DEBUG", default=False)
+ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["*"])
 
 # Версия API. Основные эндпоинты подключаются под /api/${API_VERSION}/.
 API_VERSION = env("API_VERSION", default="v1")
@@ -105,7 +155,7 @@ TEMPLATES = [
 # ---------------------------------------------------------------------------
 
 DATABASES = {
-    "default": env.db("DATABASE_URL"),
+    "default": env.db("DATABASE_URL", default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}"),
 }
 DATABASES["default"]["ATOMIC_REQUESTS"] = False
 DATABASES["default"]["CONN_MAX_AGE"] = 60
@@ -128,8 +178,9 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 PASSWORD_HASHERS = [
-    "django.contrib.auth.hashers.Argon2PasswordHasher",
     "django.contrib.auth.hashers.PBKDF2PasswordHasher",
+    "django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher",
+    "django.contrib.auth.hashers.Argon2PasswordHasher",
     "django.contrib.auth.hashers.BCryptSHA256PasswordHasher",
 ]
 
@@ -298,16 +349,40 @@ SPECTACULAR_SETTINGS = {
 # CORS
 # ---------------------------------------------------------------------------
 
+CORS_ALLOW_ALL_ORIGINS = env.bool("CORS_ALLOW_ALL_ORIGINS", default=True)
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "dnt",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+]
+CSRF_TRUSTED_ORIGINS = env.list(
+    "CSRF_TRUSTED_ORIGINS",
+    default=[
+        "https://*.pythonanywhere.com",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+    ],
+)
 
 
 # ---------------------------------------------------------------------------
 # Celery
 # ---------------------------------------------------------------------------
 
-CELERY_BROKER_URL = env("REDIS_URL", default="redis://localhost:6379/0")
-CELERY_RESULT_BACKEND = env("REDIS_URL", default="redis://localhost:6379/0")
+REDIS_URL = env("REDIS_URL", default="")
+CELERY_BROKER_URL = REDIS_URL or "memory://"
+CELERY_RESULT_BACKEND = REDIS_URL or "cache+memory://"
+CELERY_TASK_ALWAYS_EAGER = env.bool("CELERY_TASK_ALWAYS_EAGER", default=not bool(REDIS_URL))
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
@@ -336,12 +411,20 @@ CELERY_BEAT_SCHEDULE = {
 # Кеш (используется для системных настроек, apps/common/settings_service.py)
 # ---------------------------------------------------------------------------
 
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.redis.RedisCache",
-        "LOCATION": env("REDIS_URL", default="redis://localhost:6379/1"),
+if REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": REDIS_URL,
+        }
     }
-}
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "esu-default-cache",
+        }
+    }
 
 
 # ---------------------------------------------------------------------------

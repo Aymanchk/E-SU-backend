@@ -59,8 +59,11 @@ class HealthView(APIView):
 
     @staticmethod
     def _check_redis():
+        broker_url = getattr(settings, "CELERY_BROKER_URL", "")
+        if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False) or not broker_url or not broker_url.startswith("redis"):
+            return True
         try:
-            client = redis.Redis.from_url(settings.CELERY_BROKER_URL, socket_timeout=2)
+            client = redis.Redis.from_url(broker_url, socket_timeout=2)
             return bool(client.ping())
         except Exception:
             return False
