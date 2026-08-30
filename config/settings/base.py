@@ -350,8 +350,17 @@ SPECTACULAR_SETTINGS = {
 # ---------------------------------------------------------------------------
 
 CORS_ALLOW_ALL_ORIGINS = env.bool("CORS_ALLOW_ALL_ORIGINS", default=True)
+CORS_ORIGIN_ALLOW_ALL = True
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_METHODS = [
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
+]
 CORS_ALLOW_HEADERS = [
     "accept",
     "accept-encoding",
@@ -362,11 +371,16 @@ CORS_ALLOW_HEADERS = [
     "user-agent",
     "x-csrftoken",
     "x-requested-with",
+    "*",
 ]
+CORS_EXPOSE_HEADERS = ["*"]
+CORS_PREFLIGHT_MAX_AGE = 86400
+
 CSRF_TRUSTED_ORIGINS = env.list(
     "CSRF_TRUSTED_ORIGINS",
     default=[
         "https://*.pythonanywhere.com",
+        "https://*.vercel.app",
         "http://localhost:3000",
         "http://localhost:5173",
         "http://127.0.0.1:3000",

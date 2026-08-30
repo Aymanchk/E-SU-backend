@@ -2,7 +2,7 @@
 Настройки для развёртывания на PythonAnywhere.
 
 Оптимизированы для работы без внешних зависимостей (Redis, PostgreSQL, S3),
-с полной поддержкой CORS для обращений с любого фронтенда и легким деплоем.
+с полной и открытой поддержкой CORS для обращений с любого фронтенда и легким деплоем.
 """
 
 from .base import *  # noqa: F401, F403
@@ -10,29 +10,59 @@ from .base import *  # noqa: F401, F403
 # Режим отладки: по умолчанию False, можно включить через .env (DEBUG=True)
 DEBUG = env.bool("DEBUG", default=False)  # noqa: F405
 
-# Разрешаем все хосты, чтобы приложение работало на любом домене:
-# yourname.pythonanywhere.com, кастомных доменах или при прямых запросах
-ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["*"])  # noqa: F405
+# Разрешаем все хосты, чтобы приложение принимало запросы с любого домена/поддомена
+ALLOWED_HOSTS = ["*"]
 
 # ---------------------------------------------------------------------------
-# CORS & Безопасность
+# CORS & Безопасность (Полный доступ для любых внешних клиентов и браузеров)
 # ---------------------------------------------------------------------------
 
-# Разрешаем запросы с любого frontend (localhost, Vercel, Netlify, Github Pages и т.д.)
 CORS_ALLOW_ALL_ORIGINS = True
+CORS_ORIGIN_ALLOW_ALL = True  # Для совместимости со старыми версиями django-cors-headers
 CORS_ALLOW_CREDENTIALS = True
 
-# Доверенные источники для CSRF
+CORS_ALLOW_METHODS = [
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
+]
+
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "dnt",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+    "*",
+]
+
+CORS_EXPOSE_HEADERS = ["*"]
+CORS_PREFLIGHT_MAX_AGE = 86400
+
+# Доверенные источники для CSRF (включая Vercel, PythonAnywhere и локальные порты)
 CSRF_TRUSTED_ORIGINS = env.list(  # noqa: F405
     "CSRF_TRUSTED_ORIGINS",
     default=[
         "https://*.pythonanywhere.com",
+        "https://*.vercel.app",
         "http://localhost:3000",
         "http://localhost:5173",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
     ],
 )
+
+# Не принуждать к SSL-редиректу, чтобы работали и http://, и https:// запросы
+SECURE_SSL_REDIRECT = False
+SESSION_COOKIE_SECURE = False
+CSRF_COOKIE_SECURE = False
 
 # ---------------------------------------------------------------------------
 # Celery & Фоновые задачи
@@ -54,12 +84,11 @@ CACHES = {
     }
 }
 
-# Локальное файловое хранилище (если USE_S3=False)
-if not env.bool("USE_S3", default=False):  # noqa: F405
-    STORAGES = {
-        "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
-        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
-    }
+# Локальное файловое хранилище
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+}
 
 # ---------------------------------------------------------------------------
 # Email
@@ -72,13 +101,11 @@ else:
     EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 
 # ---------------------------------------------------------------------------
-# DRF & Throttling
+# DRF & Throttling (Отключаем ограничения по частоте запросов для публичного доступа)
 # ---------------------------------------------------------------------------
 
 REST_FRAMEWORK = {**REST_FRAMEWORK}  # noqa: F405
-REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
-    "login": "300/min",
-    "password_reset": "100/hour",
-}
+REST_FRAMEWORK["DEFAULT_THROTTLE_CLASSES"] = ()  # Отключаем троттлинг для свободного доступа
+REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {}
 
 LOGGING["root"]["level"] = env("LOG_LEVEL", default="INFO")  # noqa: F405
