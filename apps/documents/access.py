@@ -78,9 +78,12 @@ class DocumentAccessService:
     def can_approve(cls, user, document: Document) -> bool:
         return (
             document.status == DocumentStatus.IN_REVIEW
-            and document.approval_steps.filter(
-                approver=user, status=ApprovalStepStatus.CURRENT
-            ).exists()
+            and (
+                cls._is_admin(user)
+                or document.approval_steps.filter(
+                    approver=user, status=ApprovalStepStatus.CURRENT
+                ).exists()
+            )
         )
 
     @classmethod
