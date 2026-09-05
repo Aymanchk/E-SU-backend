@@ -306,7 +306,7 @@ class DocumentWriteSerializer(serializers.ModelSerializer):
                 {"deadline": "Срок исполнения не может находиться в прошлом"}
             )
 
-        if not user.is_admin_role and department != user.department:
+        if not user.is_admin_role and user.department and department != user.department:
             raise serializers.ValidationError(
                 {"department": "Документ можно создать только в своём подразделении"}
             )

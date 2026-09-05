@@ -15,7 +15,7 @@ CORS_ALLOW_ALL_ORIGINS = True
 # Celery выполняет задачи сразу, без воркера.
 # Полезно, когда не хотите держать запущенный worker.
 # Для проверки реальной работы Celery поставь False.
-CELERY_TASK_ALWAYS_EAGER = False
+CELERY_TASK_ALWAYS_EAGER = True
 
 # Отключаем троттлинг, чтобы не мешал при отладке
 REST_FRAMEWORK = {**REST_FRAMEWORK}  # noqa: F405
